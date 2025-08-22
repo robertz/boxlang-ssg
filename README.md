@@ -14,11 +14,11 @@ A static site generator built with BoxLang.
    git clone https://github.com/yourusername/boxlang-ssg.git
    cd boxlang-ssg
    ```
-2. Install dependencies (if any).
+2. Install dependencies (if any).\
    install-bx-module bx-jsoup bx-markdown bx-yaml
 3. Run the static site generator:
    ```sh
-   boxlang ssg.bx
+   boxlang ssg.bx build
    ```
 
 ## Project Structure

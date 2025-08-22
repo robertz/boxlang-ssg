@@ -3,9 +3,9 @@ layout: main
 type: post
 slug: marvel-movies-in-order
 title: Marvel Movies in Chronological Order
-author: Jasper
+author: commandbox-ssg
 description: A listing of all the Marvel movies in timeline order
-tags: 
+tags:
 - misc
 - movies
 image: https://static.kisdigital.com/images/marvel/00_anthology.jpeg
@@ -156,4 +156,3 @@ Peter Parker's secret identity is revealed to the entire world. Desperate for he
 ![Spider-Man: No Way Home](https://static.kisdigital.com/images/marvel/28_dr_strange_in_the_multiverse_of_madness.webp)
 
 Doctor Strange teams up with a mysterious teenage girl from his dreams who can travel across multiverses, to battle multiple threats, including other-universe versions of himself, which threaten to wipe out millions across the multiverse. They seek help from Wanda the Scarlet Witch, Wong and others.
-

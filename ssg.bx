@@ -260,14 +260,18 @@ class {
 	 * @prc request context for the page
 	 */
 	function getPermalink( required struct prc ){
-		var permalink = "";
-		permalink     = prc.outFile
-			.replace( cwd & "_site/", "" )
-			.listToArray( "/" )
-			.reverse();
-		if ( prc.fileExt == "html" ) permalink[ 1 ] = listFirst( permalink[ 1 ], "." );
-		if ( permalink[ 1 ] == "index" ) permalink[ 1 ] = "";
-		prc.permalink = "/" & permalink.reverse().toList( "/" );
+		// Remove _site/ prefix and split path
+		var relPath = prc.outFile.replace( cwd & "_site/", "" );
+		var parts = relPath.listToArray( "/" );
+		// Process last part (filename)
+		var lastIdx = parts.len();
+		if ( lastIdx > 0 ) {
+			if ( prc.fileExt == "html" ) parts[ lastIdx ] = listFirst( parts[ lastIdx ], "." );
+			if ( parts[ lastIdx ] == "index" ) parts[ lastIdx ] = "";
+		}
+		// Remove empty trailing part if present
+		if ( parts.len() > 0 && parts[ parts.len() ] == "" ) parts.deleteAt( parts.len() );
+		prc.permalink = "/" & parts.toList( "/" );
 	}
 
 	/**
