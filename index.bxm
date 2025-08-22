@@ -1,0 +1,9 @@
+<!---
+type: page
+layout: main
+--->
+<bx:output>
+<bx:loop array="#collections.post#" item="post">
+	<a href="#post.permalink#">#post.title#</a><br />
+</bx:loop>
+</bx:output>

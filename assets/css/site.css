@@ -1,0 +1,29 @@
+.post {
+	min-height: 100vh;
+}
+
+.post img {
+	width: 100%;
+	max-width: 100%;
+	height: auto;
+}
+
+.tags .col-8 {
+	min-height: 100vh;
+}
+
+.tags .col-img-top img {
+	max-height: 300px;
+	object-fit: cover;
+}
+
+.feed-item {
+	max-height: 300px;
+	object-fit: cover;
+}
+
+footer {
+	background-color: #000;
+	color: white;
+	height: 125px;
+}
