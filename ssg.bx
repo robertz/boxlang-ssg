@@ -23,6 +23,7 @@ class {
 			printLn("Processing document: " & doc.path & doc.name);
 			processTemplate(doc.path & doc.name);
 		});
+		// processTemplate must have fun to exec the following
 		processCollectionsData();
 		processPagination();
 		generateStatic();
@@ -50,11 +51,14 @@ class {
 			case "build":
 				build();
 				break;
-			case "global":
-				printLn(variables.collections);
-				break;
 			case "list":
 				printLn(variables.documents.map(doc => doc.path & doc.name).toList(char(10)));
+				break;
+			case "help":
+				printLn("Available commands: build, list, help");
+				printLn("Use 'boxlang ssg.bx build' to generate the static site.");
+				printLn("Use 'boxlang ssg.bx list' to list all documents.");
+				printLn("Use 'boxlang ssg.bx help' to display this help message.");
 				break;
 			default:
 				printLn("Unknown command: " & command);
@@ -178,40 +182,49 @@ class {
 		}
 	}
 
+	/**
+	 * Get front matter and content of a document
+	 */
 	function getTemplateData( required string fname ){
-		var payload  = {};
-		var yaml     = "";
-		var body     = "";
-		var isBXM    = fname.findNoCase( ".bxm" ) ? true : false;
-		var openFile = fileOpen( fname, "read" );
-		var lines    = [];
+		// Initialize variables
+		var payload = {};
+		var yaml = "";
+		var body = "";
+		var isBXM = fname.findNoCase(".bxm") ? true : false;
+		var lines = [];
 
+		// Read all lines from file
+		var openFile = fileOpen(fname, "read");
 		try {
-			while ( !fileIsEOF( openFile ) ) {
-				arrayAppend( lines, rTrim( fileReadLine( openFile ) ) );
+			while (!fileIsEOF(openFile)) {
+				arrayAppend(lines, rTrim(fileReadLine(openFile)));
 			}
-		} catch ( any e ) {
+		} catch (any e) {
 			rethrow;
 		} finally {
-			fileClose( openFile );
+			fileClose(openFile);
 		}
-		// front matter should be at the start of the file
-		var fms = !isBXM ? lines.find( "---" ) : lines.find( "<!---" ); // front matter start
-		if ( fms == 1 ) {
-			var fme = !isBXM ? lines.findAll( "---" )[ 2 ] : lines.findAll( "--->" )[ 1 ]; // front matter end
-			lines.each( ( line, index ) => {
-				if ( index > 1 && index < fme ) yaml &= lines[ index ] & char( 10 );
-				if ( index > fme ) body &= lines[ index ] & char( 10 );
-			} );
-			if ( yaml.len() ) payload.append( yamlDeserialize( trim( yaml ) ) );
+
+		// Detect front matter at start of file
+		var fmStart = !isBXM ? lines.find("---") : lines.find("<!---");
+		if (fmStart == 1) {
+			var fmEnd = !isBXM ? lines.findAll("---")[2] : lines.findAll("--->")[1];
+			// Extract YAML front matter and body
+			for (var i = 2; i < fmEnd; i++) yaml &= lines[i]  & char(10);
+			for (var i = fmEnd + 1; i <= lines.len(); i++) body &= lines[i] & char(10);
+			if (yaml.len()) payload.append(yamlDeserialize(trim(yaml)));
 		} else {
-			body = arrayToList( lines, char( 10 ) );
+			// No front matter, treat all as body
+			body = arrayToList(lines, char(10));
 		}
-		if(payload.keyExists("tags") && isArray(payload.tags) && isArray(payload.tags[1])){
+
+		// Flatten tags if nested array
+		if (payload.keyExists("tags") && isArray(payload.tags) && isArray(payload.tags[1])) {
 			payload.tags = payload.tags[1];
-			// dump(payload); abort;
 		}
-		payload[ "content" ] = isBXM ? body : markdown( body );
+
+		// Set content property, convert markdown if not BXM
+		payload["content"] = isBXM ? body : markdown(body);
 
 		return payload;
 	}
@@ -517,7 +530,7 @@ class {
 		// if ( isXML( trim( toString(renderedHtml) ) ) ) prc.fileExt = "xml";
 
 
-		return prc.fileExt == "html" ? htmlParse( renderedHtml ) : renderedHtml;
+		return prc.fileExt == "html" ? htmlParse( renderedHtml ).html() : renderedHtml;
 	}
 
 	/**
@@ -566,7 +579,7 @@ class {
 		templates.each( ( prc ) => {
 			if ( prc.published ) {
 				try{
-					var contents = renderTemplate( prc ).html();
+					var contents = renderTemplate( prc ).html() ?: renderTemplate( prc );
 					directoryCreate(
 						getDirectoryFromPath( prc.outFile ),
 						true,

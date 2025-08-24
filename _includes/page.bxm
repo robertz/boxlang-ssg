@@ -7,7 +7,7 @@
 				#prc.content#
 			</div>
 			<div class="col-lg-4 d-none d-lg-block d-xl-block">
-				<!--- <bx:include template="sidebar.cfm" /> --->
+				<bx:include template="sidebar.bxm" />
 			</div>
 		</div>
 	</div>

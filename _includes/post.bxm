@@ -6,9 +6,9 @@
 			<div class="col-lg-8 col-md-12">
 				<div class="mb-3">
 					<div>
-						<!--- <cfloop array="#prc.tags#" item="tag">
+						<bx:loop array="#prc.tags#" item="tag">
 							<span class="badge badge-secondary">#tag#</span>
-						</cfloop> --->
+						</bx:loop>
 					</div>
 					<p class="h2">#prc.title#</p>
 					<div class="mb-2">
