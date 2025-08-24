@@ -10,49 +10,51 @@ class {
 	variables.collections = { "all" : [], "tags" : [], "byTag" : {}, "global" : {} };
 	variables.process = {};
 	variables.baseData    = { "layouts" : {}, "views" : {} };
-	variables.templates = [];
 
+	variables.documents = []; // list of renderable documents found
+	variables.templates = []; // data required to render each document
+
+	/**
+	 * Main build function
+	 */
 	function build(){
-		getProcessConfig();
-
-		if(variables.process.hasConfig) getSSGConfig();
-		if(variables.process.hasIncludes) getIncludes();
-
-		local.templates = [];
-
-		fileList = directoryList(variables.cwd, true, "path", (any path) => {
-			return
-				((arguments.path.find(".md") || arguments.path.find(".bxm")) && !arguments.path.findNoCase("readme.md")) &&
-				!ignoreDirs.find((dir) => path.find(dir));
+		processPassthruFiles();
+		variables.documents.each(doc => {
+			printLn("Processing document: " & doc.path & doc.name);
+			processTemplate(doc.path & doc.name);
 		});
-
-		local.templates = fileList.map((file) => {
-			return {
-				name: getFileFromPath(file),
-				path: getDirectoryFromPath(file)
-			};
-		});
-
-		local.templates.each(template => {
-			processTemplate(template.path & template.name);
-		});
-
 		processCollectionsData();
-
+		processPagination();
 		generateStatic();
 	}
 
+	/**
+	 * Main entry point
+	 */
 	function main(args = []){
 		if(!args.len()) {
 			printLn("No arguments provided");
 			cliExit(1)
 		}
 
-		local.command = args[1];
+		getProcessConfig();
+		listDocuments();
+		if(variables.process.hasIncludes) getIncludes();
+		if(variables.process.hasData) getGlobalData();
+		if(variables.process.applicationHelper) getApplicationHelper();
+		if(variables.process.hasConfig) getSSGConfig();
+
+		var command = args[1];
 
 		switch(command) {
 			case "build":
 				build();
+				break;
+			case "global":
+				printLn(variables.collections);
+				break;
+			case "list":
+				printLn(variables.documents.map(doc => doc.path & doc.name).toList(char(10)));
 				break;
 			default:
 				printLn("Unknown command: " & command);
@@ -62,14 +64,29 @@ class {
 		cliExit(0);
 	}
 
-	/**
-	 * Build related functions
-	 */
+	// ***********************************************************************************
+	// Supporting functions
+	// ***********************************************************************************
 
 	/**
-	 * Detect directory structure and setup defaul values
-	 *
-	 * @process the configuration object
+	 * List all renderable documents in the project
+	 */
+	function listDocuments(){
+		var fileList = directoryList(variables.cwd, true, "path", (any path) => {
+			return
+				((arguments.path.findNoCase(".md") || arguments.path.findNoCase(".bxm")) && !arguments.path.findNoCase("readme.md")) &&
+				!ignoreDirs.find((dir) => path.findNoCase(dir));
+		});
+		variables.documents = fileList.map((file) => {
+			return {
+				name: getFileFromPath(file),
+				path: getDirectoryFromPath(file)
+			};
+		});
+	}
+
+	/**
+	 * Detect options
 	 */
 	function getProcessConfig(){
 		variables.process[ "applicationHelper" ] = fileExists( cwd & "_includes/applicationHelper.bxm" );
@@ -85,7 +102,10 @@ class {
 	 */
 	function getSSGConfig(){
 		try {
-			variables.config = JSONDeserialize( fileRead( cwd & "ssg-config.json", "utf-8" ) );
+			variables.config = JSONDeserialize( fileRead( variables.cwd & "ssg-config.json", "utf-8" ) );
+			for ( var dir in config.ignore ) {
+				if ( directoryExists( variables.cwd & dir ) ) ignoreDirs.append( variables.cwd & dir );
+			}
 		} catch ( any e ) {
 			printLn( "Error loading SSG config: " & e.message );
 		}
@@ -96,24 +116,66 @@ class {
 	 */
 	function getIncludes(){
 		// build arrays of valid layouts/views
-		var fileStem = "";
-		var tmp = directoryList(cwd & "_includes/layouts", false, "path", "*.bxm");
-		for ( var layout in tmp ) {
-			fileStem = listFirst( getFileFromPath( layout ), "." );
-			process.layouts.append( fileStem );
-			baseData[ "layouts" ][ fileStem ] = getTemplateData( layout );
-			baseData[ "layouts" ][ fileStem ].delete( "content" );
-		}
-		tmp = directoryList(cwd & "_includes", false, "path", (path) => {
+		var layoutsDir = cwd & "_includes/layouts";
+		var includesDir = cwd & "_includes";
+
+		var layouts = directoryList(layoutsDir, false, "path", "*.bxm");
+		layouts.each((layout) => {
+			var stem = listFirst(getFileFromPath(layout), ".");
+			process.layouts.append(stem);
+			var data = getTemplateData(layout);
+			if (data.keyExists("content")) data.delete("content");
+			baseData["layouts"][stem] = data;
+		});
+		var views = directoryList(includesDir, false, "path", (path) => {
 			return !path.findNoCase("layouts") && !path.findNoCase("applicationHelper.bxm");
 		});
-		for ( var view in tmp ) {
-			fileStem = listFirst( getFileFromPath( view ), "." );
-			process.views.append( fileStem );
-			baseData[ "views" ][ fileStem ] = getTemplateData( view );
-			baseData[ "views" ][ fileStem ].delete( "content" );
-		}
+		views.each((view) => {
+			var stem = listFirst(getFileFromPath(view), ".");
+			process.views.append(stem);
+			var data = getTemplateData(view);
+			if (data.keyExists("content")) data.delete("content");
+			baseData["views"][stem] = data;
+		});
 
+	}
+
+	/**
+	 * Load `_data/**.json` files to `collections.global` if any exist
+	 */
+	function getGlobalData(){
+		// Load all .json files from _data directory recursively
+		var dataDir = cwd & "_data";
+		var jsonFiles = directoryList(dataDir, true, "path", (any path) => path.findNoCase(".json"));
+
+		jsonFiles.each((dataFile) => {
+			// Get file name without extension
+			var fileStem = getFileFromPath(dataFile).listFirst(".");
+			// Get relative path parts as array
+			var relPath = getDirectoryFromPath(dataFile).replace(dataDir, "");
+			var pathParts = relPath.len() ? relPath.listToArray("/") : [];
+
+			// Walk or create nested structure in collections.global
+			var target = collections.global;
+			for (var part in pathParts) {
+				if (!target.keyExists(part)) target[part] = {};
+				target = target[part];
+			}
+
+			// Deserialize JSON and assign to correct location
+			target[fileStem] = jsonDeserialize(fileRead(dataFile, "utf-8"));
+		});
+	}
+
+	/**
+	 * Get applicationHelper.cfm if it exists
+	 */
+	function getApplicationHelper(){
+		try {
+			include "#cwd#_includes/applicationHelper.bxm" ;
+		} catch ( any e ) {
+			error( "Error loading applicationHelper.bxm :: " & e.message );
+		}
 	}
 
 	function getTemplateData( required string fname ){
@@ -145,8 +207,38 @@ class {
 		} else {
 			body = arrayToList( lines, char( 10 ) );
 		}
+		if(payload.keyExists("tags") && isArray(payload.tags) && isArray(payload.tags[1])){
+			payload.tags = payload.tags[1];
+			// dump(payload); abort;
+		}
 		payload[ "content" ] = isBXM ? body : markdown( body );
+
 		return payload;
+	}
+
+	/**
+	 * Purge output directory and move static files
+	 */
+	function processPassthruFiles(){
+		// delete the _site directory if it exists
+		if ( directoryExists( cwd & "_site" ) ) {
+			directoryDelete( cwd & "_site", true );
+		}
+		// recreate the directory
+		directoryCreate( cwd & "_site" );
+
+		try {
+			// passthru directories
+			for ( var dir in config.passthru ) {
+				if ( fileExists( cwd & dir ) ) {
+					fileCopy( cwd & dir, cwd & "_site/" & dir );
+				} else {
+					directoryCopy( cwd & dir, cwd & "_site/" & dir, true );
+				}
+			}
+		} catch ( any e ) {
+			error( e.message );
+		}
 	}
 
 	/**
@@ -155,15 +247,16 @@ class {
 	 * @template full path to the template to read
 	 */
 	function processTemplate( template ){
+		// Initialize template metadata
 		var prc = {
 			"build_start"            : "",
-			"fileSlug"               : getFileFromPath( template ).listFirst( "." ),
+			"fileSlug"               : getFileFromPath(template).listFirst("."),
 			"inFile"                 : template,
 			"outFile"                : "",
 			"title"                  : "",
 			"description"            : "",
 			"published"              : true,
-			"date"                   : dateTimeFormat( getFileInfo( template ).lastModified, "yyyy-mm-dd HH:nn" ),
+			"date"                   : dateTimeFormat(getFileInfo(template).lastModified, "yyyy-mm-dd HH:nn"),
 			"content"                : "",
 			"type"                   : "page",
 			"layout"                 : "main",
@@ -173,50 +266,101 @@ class {
 			"excludeFromCollections" : false
 		};
 
-		// Try reading the front matter from the template
-		prc.append( getTemplateData( template ) );
+		// Merge front matter from template
+		prc.append(getTemplateData(template));
 
-		// merge in layout/view metadata. skip if it overwrites an existing value
-		if ( baseData.layouts.keyExists( prc.layout ) ) {
-			prc.append( duplicate( baseData.layouts[ prc.layout ] ), false );
+		// Merge layout metadata if available, without overwriting
+		var layoutMeta = baseData.layouts.keyExists(prc.layout) ? baseData.layouts[prc.layout] : false;
+		if (layoutMeta) prc.append(duplicate(layoutMeta), false);
+
+		// Merge view metadata, prioritizing explicit view over type
+		var hasView = len(prc.view);
+		if (!hasView && baseData.views.keyExists(prc.type)) {
+			prc.append(duplicate(baseData.views[prc.type]), false);
+		} else if (hasView && baseData.views.keyExists(prc.view)) {
+			prc.append(duplicate(baseData.views[prc.view]), false);
 		}
 
-		if ( baseData.views.keyExists( prc.type ) && !len( prc.view ) ) {
-			prc.append( duplicate( baseData.views[ prc.type ] ), false );
-		} else if ( baseData.views.keyExists( prc.view ) && len( prc.view ) ) {
-			// `view` overrides `type`, if it exists
-			prc.append( duplicate( baseData.views[ prc.view ] ), false );
-		}
+		// Only process if published is true
+		if (isBoolean(prc.published) && prc.published) {
+			getOutfile(prc);
 
-		// if the template is `published` process it
-		if ( isBoolean( prc.published ) && prc.published ) {
-			getOutfile( prc );
-
-			// process permalinks
-			// todo: clean up
-			if ( len( prc.permalink ) ) {
-				// permalink was specified, break it apart
+			// Handle permalinks
+			if (len(prc.permalink)) {
 				prc.outFile = cwd & "_site" & prc.permalink;
-
-				var temp = prc.permalink.listToArray( "/" ).reverse();
-				var slug = temp[ 1 ].listFirst( "." );
-				var ext  = temp[ 1 ].listRest( "." );
-
-				prc.permalink = "/" & temp.reverse().toList( "/" );
-				prc.fileExt   = len( ext ) ? ext : "html";
+				var permArr = prc.permalink.listToArray("/");
+				var lastSeg = permArr.len() ? permArr[permArr.len()] : "";
+				var slug = lastSeg.listFirst(".");
+				var ext  = lastSeg.listRest(".");
+				prc.permalink = "/" & permArr.toList("/");
+				prc.fileExt   = len(ext) ? ext : "html";
 			} else {
-				// try to calculate the permalink based on the template
-				getPermalink( prc );
+				getPermalink(prc);
 			}
 
-			// set the view according to type if view is not populated
-			if ( !prc.view.len() && prc.type.len() ) {
+			// Set view to type if not already set
+			if (!prc.view.len() && prc.type.len()) {
 				prc.view = prc.type;
 			}
 
-			// add this template to `collections.all`
-			templates.append( prc );
+			// Add processed template to collections
+			templates.append(prc);
 		}
+	}
+
+	/**
+	 * Generate templates based on paginated data
+	 */
+	function processPagination(){
+		templates.each( ( prc ) => {
+			if ( prc.keyExists( "pagination" ) ) {
+				var data      = prc.pagination.data;
+				var size      = prc.pagination.keyExists( "size" ) ? prc.pagination.size : 1;
+				var targetKey = prc.pagination.keyExists( "alias" ) ? prc.pagination.alias : "pagedData";
+				// data is a string, try to retrieve from variables
+				if ( isSimpleValue( data ) ) {
+					data = structGet( prc.pagination.data );
+					// if data is a structure, return the struct key list as an array
+					if ( isStruct( data ) ) {
+						// if data is a struct, return the struct keys for iteration
+						data = structKeyList( data ).listSort( "textnocase", "asc" ).listToArray();
+					}
+				}
+
+				// set the parent prc scope for the paginated templates
+				var parent_prc = duplicate( prc );
+
+				// ensure parent template is not rendered
+				prc.published = false;
+
+				var paged = paginate( data = data, pageSize = size );
+				paged.each( ( page, index ) => {
+					var page_prc          = duplicate( parent_prc );
+					var rendered_content  = "";
+					page_prc[ targetKey ] = page;
+					page_prc.permalink    = page_prc.permalink.replace( "{{" & targetKey & "}}", page );
+					page_prc.outFile      = cwd & config.outputDir & page_prc.permalink;
+					if ( isSimpleValue( prc.pagination.data ) && isStruct( structGet( prc.pagination.data ) ) ) {
+						page_prc.append( structGet( prc.pagination.data )[ page ] );
+					}
+					getPermalink( page_prc );
+					templates.append( page_prc );
+					// tag and template type processing
+					if ( page_prc.keyExists( "tags" ) && page_prc.tags.len() ) {
+						for ( var tag in page_prc.tags ) {
+							if ( !collections.tags.findNoCase( tag ) ) collections.tags.append( tag );
+							var slugifiedTag = generateSlug( tag );
+							if ( !collections.byTag.keyExists( slugifiedTag ) ) collections.byTag[ slugifiedTag ] = [];
+							collections.byTag[ slugifiedTag ].append( page_prc );
+						}
+					}
+					// add page to types
+					if ( !collections.keyExists( page_prc.type ) && page_prc.type.len() )
+						collections[ page_prc.type ] = [];
+					if ( page_prc.type.len() ) collections[ lCase( page_prc.type ) ].append( page_prc );
+				} );
+			}
+		} );
 	}
 
 	/**
@@ -225,31 +369,31 @@ class {
 	 * @prc request context for the page
 	 */
 	function getOutfile( required struct prc ){
-		var outDir  = "";
+		// Cache site directory prefix
+		var siteDir = cwd & "_site";
 		var outFile = "";
-		var temp    = "";
 
-		if ( prc.type == "post" ) {
-			outFile   = prc.inFile.replace( cwd, "" );
-			temp      = outFile.listToArray( "/" ).reverse();
-			temp[ 1 ] = ( prc.keyExists( "slug" ) ? prc.slug : prc.fileSlug ) & "." & prc.fileExt;
-			outFile   = cwd & "_site/" & temp.reverse().toList( "/" );
-		} else {
-			if ( len( prc.permalink ) ) {
-				outFile  = cwd & "_site" & prc.permalink;
-				// calculate the file extension
-				var stem = listLast( prc.permalink, "/" );
-				if ( stem.find( "." ) ) {
-					prc.fileExt = listLast( "." );
-				} else {
-					// a file exension wasn't specified
-					prc.fileExt = "";
-				}
-			} else {
-				outFile = getFileFromPath( prc.inFile ).listFirst( "." );
-				outDir  = getDirectoryFromPath( prc.inFile ).replace( cwd, "/" );
-				outFile = cwd & "_site" & outDir & outFile & "." & prc.fileExt;
+		if (prc.type == "post") {
+			// For posts, use slug (or fileSlug) and file extension
+			var relPathArr = prc.inFile.replace(cwd, "").listToArray("/");
+			if (relPathArr.len()) {
+				relPathArr[relPathArr.len()] = (prc.keyExists("slug") ? prc.slug : prc.fileSlug) & "." & prc.fileExt;
+				outFile = siteDir & "/" & relPathArr.toList("/");
 			}
+		} else if (len(prc.permalink)) {
+			// If permalink is set, use it
+			outFile = siteDir & prc.permalink;
+			var stem = listLast(prc.permalink, "/");
+			if (stem.find(".")) {
+				prc.fileExt = stem.listRest(".");
+			} else {
+				prc.fileExt = "";
+			}
+		} else {
+			// Default: use input file's directory and name
+			var fileName = getFileFromPath(prc.inFile).listFirst(".");
+			var outDir = getDirectoryFromPath(prc.inFile).replace(cwd, "/");
+			outFile = siteDir & outDir & fileName & "." & prc.fileExt;
 		}
 		prc.outfile = outFile;
 	}
@@ -260,18 +404,47 @@ class {
 	 * @prc request context for the page
 	 */
 	function getPermalink( required struct prc ){
-		// Remove _site/ prefix and split path
-		var relPath = prc.outFile.replace( cwd & "_site/", "" );
-		var parts = relPath.listToArray( "/" );
-		// Process last part (filename)
-		var lastIdx = parts.len();
-		if ( lastIdx > 0 ) {
-			if ( prc.fileExt == "html" ) parts[ lastIdx ] = listFirst( parts[ lastIdx ], "." );
-			if ( parts[ lastIdx ] == "index" ) parts[ lastIdx ] = "";
+		// Remove _site/ prefix and split path into array
+		var sitePrefix = cwd & "_site/";
+		var relPath = prc.outFile.replace(sitePrefix, "");
+		var pathParts = relPath.listToArray("/");
+
+		// Handle last part: remove .html extension and "index" filename
+		var lastIdx = pathParts.len();
+		if (lastIdx > 0) {
+			var lastPart = pathParts[lastIdx];
+			if (prc.fileExt == "html") lastPart = lastPart.listFirst(".");
+			if (lastPart == "index") lastPart = "";
+			pathParts[lastIdx] = lastPart;
 		}
+
 		// Remove empty trailing part if present
-		if ( parts.len() > 0 && parts[ parts.len() ] == "" ) parts.deleteAt( parts.len() );
-		prc.permalink = "/" & parts.toList( "/" );
+		if (pathParts.len() > 0 && pathParts[pathParts.len()] == "") pathParts.deleteAt(pathParts.len());
+
+		// Join parts to form permalink
+		prc.permalink = "/" & pathParts.toList("/");
+	}
+
+	/**
+	 * a function to quickly paginate data
+	 *
+	 * @data     the data to be paginated
+	 * @pageSize items per page
+	 */
+	function paginate( required array data, required numeric pageSize ){
+		var output       = [];
+		var currentChunk = 1;
+
+		if ( pageSize > 1 ) output[ 1 ] = [];
+		data.each( ( item, index ) => {
+			if ( pageSize > 1 ) {
+				output[ currentChunk ].append( item );
+			} else {
+				output.append( item, true );
+			}
+			if ( index % pageSize == 0 && index < data.len() && pageSize > 1 ) output[ ++currentChunk ] = [];
+		} );
+		return output;
 	}
 
 	/**
@@ -283,13 +456,12 @@ class {
 		var renderedHtml = "";
 		var template     = "";
 
-
 		try {
 			// template is CF markup
 			if ( prc.inFile.findNoCase( ".bxm" ) ) {
 				if ( process.hasIncludes && process.views.find( prc.view ) && prc.layout != "none" ) {
 					// render the cfml in the template first
-					template =  prc.inFile ;
+					template =  prc.inFile;
 
 					bx:savecontent variable="prc.content" {
 						include template;
@@ -324,7 +496,6 @@ class {
 				}
 			}
 
-
 			// skip layout if "none" is specified
 			if (
 				prc.layout != "none" &&
@@ -339,6 +510,7 @@ class {
 			}
 
 		} catch ( any e ) {
+			dump(prc);
 			printLn( "Error rendering template: " & e.message );
 		}
 
@@ -352,38 +524,38 @@ class {
 	 * Generates data for `collections` scope
 	 */
 	function processCollectionsData(){
-		templates.each( ( template ) => {
-			if ( !template.excludeFromCollections && !template.keyExists( "pagination" ) ) {
-				collections.all.append( template );
-				if ( !collections.keyExists( template.type ) && template.type.len() ) collections[ template.type ] = [];
-
-				// do not track the main page if it is paginated data
-				if ( template.type.len() && !template.keyExists( "pagination" ) )
-					collections[ lCase( template.type ) ].append( template );
-			}
-		} );
-
-		// Special processing where `type` is post
-		if ( collections.keyExists( "post" ) ) {
-			// descending date sort
-			collections.post.sort( function( e1, e2 ){
-				return dateCompare( e2.date, e1.date );
-			} );
-
-			// build the taglist
-			collections.post.each( ( post ) => {
-				for ( var tag in post.tags ) {
-					if ( !collections.tags.findNoCase( tag ) ) {
-						collections.tags.append( tag );
-					}
-
-					var slugifiedTag = slugify( tag.toString() );
-					if ( !collections.byTag.keyExists( slugifiedTag ) ) collections.byTag[ slugifiedTag ] = [];
-					collections.byTag[ slugifiedTag ].append( post );
+		// Add templates to collections
+		templates.each((template) => {
+			var type = template.type ?: "";
+			var isPaginated = template.keyExists("pagination");
+			if (!template.excludeFromCollections && !isPaginated) {
+				collections.all.append(template);
+				if (type.len()) {
+					if (!collections.keyExists(type)) collections[type] = [];
+					collections[lCase(type)].append(template);
 				}
-			} );
+			}
+		});
 
-			collections.tags = collections.tags.sort( "text" );
+		// Special processing for posts
+		if (collections.keyExists("post")) {
+			// Sort posts by date descending
+			collections.post.sort((e1, e2) => dateCompare(e2.date, e1.date));
+
+			// Build tag list and byTag mapping
+			collections.post.each((post) => {
+				if (post.keyExists("tags")) {
+					for (var tag in post.tags) {
+						if (!collections.tags.findNoCase(tag)) {
+							collections.tags.append(tag);
+						}
+						var slugifiedTag = slugify(tag);
+						if (!collections.byTag.keyExists(slugifiedTag)) collections.byTag[slugifiedTag] = [];
+						collections.byTag[slugifiedTag].append(post);
+					}
+				}
+			});
+			collections.tags = collections.tags.sort("text");
 		}
 	}
 
@@ -393,23 +565,30 @@ class {
 	function generateStatic(){
 		templates.each( ( prc ) => {
 			if ( prc.published ) {
-				var contents = renderTemplate( prc ).toString();
-				directoryCreate(
-					getDirectoryFromPath( prc.outFile ),
-					true,
-					true
-				);
-
-				if ( process.verbose ?: false ) {
-					print.greyline(
-						" [ " & prc.inFile & " ] -> " &
-						"/" & replace( prc.outFile, cwd, "", "all" ) &
-						"  [" & prc.fileExt & "]"
+				try{
+					var contents = renderTemplate( prc ).html();
+					directoryCreate(
+						getDirectoryFromPath( prc.outFile ),
+						true,
+						true
 					);
-				} else {
-					printLn( "Writing file: /" & replace( prc.outFile, cwd, "", "all" ) );
+
+					if ( process.verbose ?: false ) {
+						print.greyline(
+							" [ " & prc.inFile & " ] -> " &
+							"/" & replace( prc.outFile, cwd, "", "all" ) &
+							"  [" & prc.fileExt & "]"
+						);
+					} else {
+						printLn( "Writing file: /" & replace( prc.outFile, cwd, "", "all" ) );
+					}
+					fileWrite( prc.outFile, contents );
 				}
-				fileWrite( prc.outFile, contents );
+				catch ( any e ) {
+					printLn( prc);
+					printLn(e)
+					abort;
+				}
 			}
 		} );
 	}
