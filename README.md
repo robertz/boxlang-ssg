@@ -11,7 +11,7 @@ A static site generator built with BoxLang.
 
 1. Clone the repository:
    ```sh
-   git clone https://github.com/yourusername/boxlang-ssg.git
+   git clone https://github.com/robertz/boxlang-ssg.git
    cd boxlang-ssg
    ```
 2. Install dependencies (if any).\

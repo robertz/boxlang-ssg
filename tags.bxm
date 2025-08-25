@@ -1,0 +1,14 @@
+<!---
+layout: main
+view: page
+permalink: /tag/{{tag}}.html
+pagination:
+  alias: tag
+  data: collections.tags
+--->
+<bx:output>
+	<h4>Posts tagged as #prc.tag#</h4>
+	<bx:loop array="#collections.byTag[slugify(prc.tag)]#" index="i">
+		<p><a href="#i.permalink#" class="post-link text-decoration-none">#i.title#</a></p>
+	</bx:loop>
+</bx:output>

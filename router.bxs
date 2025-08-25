@@ -1,0 +1,7 @@
+// simple router for boxlang-miniserver
+try{
+	include cgi.path_info & ".html"
+}
+catch (e) {
+	include "404.html"
+}

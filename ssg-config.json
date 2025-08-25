@@ -1,6 +1,7 @@
 {
 	"outputDir": "_site",
 	"passthru": [
+		"router.bxs",
 		"assets"
 	],
 	"ignore": [
