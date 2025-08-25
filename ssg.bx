@@ -73,46 +73,75 @@ class {
 	// ***********************************************************************************
 
 	/**
-	 * List all renderable documents in the project
+	 * Write generated content to files
 	 */
-	function listDocuments(){
-		var fileList = directoryList(variables.cwd, true, "path", (any path) => {
-			return
-				((arguments.path.findNoCase(".md") || arguments.path.findNoCase(".bxm")) && !arguments.path.findNoCase("readme.md")) &&
-				!ignoreDirs.find((dir) => path.findNoCase(dir));
-		});
-		variables.documents = fileList.map((file) => {
-			return {
-				name: getFileFromPath(file),
-				path: getDirectoryFromPath(file)
-			};
-		});
-	}
+	function generateStatic(){
+		templates.each( ( prc ) => {
+			if ( prc.published ) {
+				try{
+					var contents = renderTemplate( prc );
+					directoryCreate(
+						getDirectoryFromPath( prc.outFile ),
+						true,
+						true
+					);
 
-	/**
-	 * Detect options
-	 */
-	function getProcessConfig(){
-		variables.process[ "applicationHelper" ] = fileExists( cwd & "_includes/applicationHelper.bxm" );
-		variables.process[ "hasIncludes" ]       = directoryExists( cwd & "_includes" ) ? true : false;
-		variables.process[ "hasData" ]           = directoryExists( cwd & "_data" ) ? true : false;
-		variables.process[ "hasConfig" ]         = fileExists( cwd & "ssg-config.json" ) ? true : false;
-		variables.process[ "layouts" ]           = [];
-		variables.process[ "views" ]             = [];
-	}
-
-	/**
-	 * Load the current build configuration from file if it exists, otherweise return defaults
-	 */
-	function getSSGConfig(){
-		try {
-			variables.config = JSONDeserialize( fileRead( variables.cwd & "ssg-config.json", "utf-8" ) );
-			for ( var dir in config.ignore ) {
-				if ( directoryExists( variables.cwd & dir ) ) ignoreDirs.append( variables.cwd & dir );
+					if ( process.verbose ?: false ) {
+						print.greyline(
+							" [ " & prc.inFile & " ] -> " &
+							"/" & replace( prc.outFile, cwd, "", "all" ) &
+							"  [" & prc.fileExt & "]"
+						);
+					} else {
+						printLn( "Writing file: /" & replace( prc.outFile, cwd, "", "all" ) );
+					}
+					fileWrite( prc.outFile, contents );
+				}
+				catch ( any e ) {
+					printLn( prc);
+					printLn(e)
+					abort;
+				}
 			}
+		} );
+	}
+
+	/**
+	 * Get applicationHelper.cfm if it exists
+	 */
+	function getApplicationHelper(){
+		try {
+			include "#cwd#_includes/applicationHelper.bxm" ;
 		} catch ( any e ) {
-			printLn( "Error loading SSG config: " & e.message );
+			error( "Error loading applicationHelper.bxm :: " & e.message );
 		}
+	}
+
+	/**
+	 * Load `_data/**.json` files to `collections.global` if any exist
+	 */
+	function getGlobalData(){
+		// Load all .json files from _data directory recursively
+		var dataDir = cwd & "_data";
+		var jsonFiles = directoryList(dataDir, true, "path", (any path) => path.findNoCase(".json"));
+
+		jsonFiles.each((dataFile) => {
+			// Get file name without extension
+			var fileStem = getFileFromPath(dataFile).listFirst(".");
+			// Get relative path parts as array
+			var relPath = getDirectoryFromPath(dataFile).replace(dataDir, "");
+			var pathParts = relPath.len() ? relPath.listToArray("/") : [];
+
+			// Walk or create nested structure in collections.global
+			var target = collections.global;
+			for (var part in pathParts) {
+				if (!target.keyExists(part)) target[part] = {};
+				target = target[part];
+			}
+
+			// Deserialize JSON and assign to correct location
+			target[fileStem] = jsonDeserialize(fileRead(dataFile, "utf-8"));
+		});
 	}
 
 	/**
@@ -145,40 +174,90 @@ class {
 	}
 
 	/**
-	 * Load `_data/**.json` files to `collections.global` if any exist
+	 * Calculate the output filename
+	 *
+	 * @prc request context for the page
 	 */
-	function getGlobalData(){
-		// Load all .json files from _data directory recursively
-		var dataDir = cwd & "_data";
-		var jsonFiles = directoryList(dataDir, true, "path", (any path) => path.findNoCase(".json"));
+	function getOutfile( required struct prc ){
+		// Cache site directory prefix
+		var siteDir = cwd & "_site";
+		var outFile = "";
 
-		jsonFiles.each((dataFile) => {
-			// Get file name without extension
-			var fileStem = getFileFromPath(dataFile).listFirst(".");
-			// Get relative path parts as array
-			var relPath = getDirectoryFromPath(dataFile).replace(dataDir, "");
-			var pathParts = relPath.len() ? relPath.listToArray("/") : [];
-
-			// Walk or create nested structure in collections.global
-			var target = collections.global;
-			for (var part in pathParts) {
-				if (!target.keyExists(part)) target[part] = {};
-				target = target[part];
+		if (prc.type == "post") {
+			// For posts, use slug (or fileSlug) and file extension
+			var relPathArr = prc.inFile.replace(cwd, "").listToArray("/");
+			if (relPathArr.len()) {
+				relPathArr[relPathArr.len()] = (prc.keyExists("slug") ? prc.slug : prc.fileSlug) & "." & prc.fileExt;
+				outFile = siteDir & "/" & relPathArr.toList("/");
 			}
-
-			// Deserialize JSON and assign to correct location
-			target[fileStem] = jsonDeserialize(fileRead(dataFile, "utf-8"));
-		});
+		} else if (len(prc.permalink)) {
+			// If permalink is set, use it
+			outFile = siteDir & prc.permalink;
+			var stem = listLast(prc.permalink, "/");
+			if (stem.find(".")) {
+				prc.fileExt = stem.listRest(".");
+			} else {
+				prc.fileExt = "";
+			}
+		} else {
+			// Default: use input file's directory and name
+			var fileName = getFileFromPath(prc.inFile).listFirst(".");
+			var outDir = getDirectoryFromPath(prc.inFile).replace(cwd, "/");
+			outFile = siteDir & outDir & fileName & "." & prc.fileExt;
+		}
+		prc.outfile = outFile;
 	}
 
 	/**
-	 * Get applicationHelper.cfm if it exists
+	 * Calculate permalink
+	 *
+	 * @prc request context for the page
 	 */
-	function getApplicationHelper(){
+	function getPermalink( required struct prc ){
+		// Remove _site/ prefix and split path into array
+		var sitePrefix = cwd & "_site/";
+		var relPath = prc.outFile.replace(sitePrefix, "");
+		var pathParts = relPath.listToArray("/");
+
+		// Handle last part: remove .html extension and "index" filename
+		var lastIdx = pathParts.len();
+		if (lastIdx > 0) {
+			var lastPart = pathParts[lastIdx];
+			if (prc.fileExt == "html") lastPart = lastPart.listFirst(".");
+			if (lastPart == "index") lastPart = "";
+			pathParts[lastIdx] = lastPart;
+		}
+
+		// Remove empty trailing part if present
+		if (pathParts.len() > 0 && pathParts[pathParts.len()] == "") pathParts.deleteAt(pathParts.len());
+
+		// Join parts to form permalink
+		prc.permalink = "/" & pathParts.toList("/");
+	}
+
+	/**
+	 * Detect options
+	 */
+	function getProcessConfig(){
+		variables.process[ "applicationHelper" ] = fileExists( cwd & "_includes/applicationHelper.bxm" );
+		variables.process[ "hasIncludes" ]       = directoryExists( cwd & "_includes" ) ? true : false;
+		variables.process[ "hasData" ]           = directoryExists( cwd & "_data" ) ? true : false;
+		variables.process[ "hasConfig" ]         = fileExists( cwd & "ssg-config.json" ) ? true : false;
+		variables.process[ "layouts" ]           = [];
+		variables.process[ "views" ]             = [];
+	}
+
+	/**
+	 * Load the current build configuration from file if it exists, otherweise return defaults
+	 */
+	function getSSGConfig(){
 		try {
-			include "#cwd#_includes/applicationHelper.bxm" ;
+			variables.config = JSONDeserialize( fileRead( variables.cwd & "ssg-config.json", "utf-8" ) );
+			for ( var dir in config.ignore ) {
+				if ( directoryExists( variables.cwd & dir ) ) ignoreDirs.append( variables.cwd & dir );
+			}
 		} catch ( any e ) {
-			error( "Error loading applicationHelper.bxm :: " & e.message );
+			printLn( "Error loading SSG config: " & e.message );
 		}
 	}
 
@@ -227,6 +306,139 @@ class {
 		payload["content"] = isBXM ? body : markdown(body);
 
 		return payload;
+	}
+
+	/**
+	 * List all renderable documents in the project
+	 */
+	function listDocuments(){
+		var fileList = directoryList(variables.cwd, true, "path", (any path) => {
+			return
+				((arguments.path.findNoCase(".md") || arguments.path.findNoCase(".bxm")) && !arguments.path.findNoCase("readme.md")) &&
+				!ignoreDirs.find((dir) => path.findNoCase(dir));
+		});
+		variables.documents = fileList.map((file) => {
+			return {
+				name: getFileFromPath(file),
+				path: getDirectoryFromPath(file)
+			};
+		});
+	}
+
+	/**
+	 * a function to quickly paginate data
+	 *
+	 * @data     the data to be paginated
+	 * @pageSize items per page
+	 */
+	function paginate( required array data, required numeric pageSize ){
+		var output       = [];
+		var currentChunk = 1;
+
+		if ( pageSize > 1 ) output[ 1 ] = [];
+		data.each( ( item, index ) => {
+			if ( pageSize > 1 ) {
+				output[ currentChunk ].append( item );
+			} else {
+				output.append( item, true );
+			}
+			if ( index % pageSize == 0 && index < data.len() && pageSize > 1 ) output[ ++currentChunk ] = [];
+		} );
+		return output;
+	}
+
+	/**
+	 * Generates data for `collections` scope
+	 */
+	function processCollectionsData(){
+		// Add templates to collections
+		templates.each((template) => {
+			var type = template.type ?: "";
+			var isPaginated = template.keyExists("pagination");
+			if (!template.excludeFromCollections && !isPaginated) {
+				collections.all.append(template);
+				if (type.len()) {
+					if (!collections.keyExists(type)) collections[type] = [];
+					collections[lCase(type)].append(template);
+				}
+			}
+		});
+
+		// Special processing for posts
+		if (collections.keyExists("post")) {
+			// Sort posts by date descending
+			collections.post.sort((e1, e2) => dateCompare(e2.date, e1.date));
+
+			// Build tag list and byTag mapping
+			collections.post.each((post) => {
+				if (post.keyExists("tags")) {
+					for (var tag in post.tags) {
+						if (!collections.tags.findNoCase(tag)) {
+							collections.tags.append(tag);
+						}
+						var slugifiedTag = slugify(tag);
+						if (!collections.byTag.keyExists(slugifiedTag)) collections.byTag[slugifiedTag] = [];
+						collections.byTag[slugifiedTag].append(post);
+					}
+				}
+			});
+			collections.tags = collections.tags.sort("text");
+		}
+	}
+
+	/**
+	 * Generate templates based on paginated data
+	 */
+	function processPagination(){
+		templates.each( ( prc ) => {
+			if ( prc.keyExists( "pagination" ) ) {
+				var data      = prc.pagination.data;
+				var size      = prc.pagination.keyExists( "size" ) ? prc.pagination.size : 1;
+				var targetKey = prc.pagination.keyExists( "alias" ) ? prc.pagination.alias : "pagedData";
+				// data is a string, try to retrieve from variables
+				if ( isSimpleValue( data ) ) {
+					data = structGet( prc.pagination.data );
+					// if data is a structure, return the struct key list as an array
+					if ( isStruct( data ) ) {
+						// if data is a struct, return the struct keys for iteration
+						data = structKeyList( data ).listSort( "textnocase", "asc" ).listToArray();
+					}
+				}
+
+				// set the parent prc scope for the paginated templates
+				var parent_prc = duplicate( prc );
+
+				// ensure parent template is not rendered
+				prc.published = false;
+
+				var paged = paginate( data = data, pageSize = size );
+				paged.each( ( page, index ) => {
+					var page_prc          = duplicate( parent_prc );
+					var rendered_content  = "";
+					page_prc[ targetKey ] = page;
+					page_prc.permalink    = page_prc.permalink.replace( "{{" & targetKey & "}}", page );
+					page_prc.outFile      = cwd & config.outputDir & page_prc.permalink;
+					if ( isSimpleValue( prc.pagination.data ) && isStruct( structGet( prc.pagination.data ) ) ) {
+						page_prc.append( structGet( prc.pagination.data )[ page ] );
+					}
+					getPermalink( page_prc );
+					templates.append( page_prc );
+					// tag and template type processing
+					if ( page_prc.keyExists( "tags" ) && page_prc.tags.len() ) {
+						for ( var tag in page_prc.tags ) {
+							if ( !collections.tags.findNoCase( tag ) ) collections.tags.append( tag );
+							var slugifiedTag = generateSlug( tag );
+							if ( !collections.byTag.keyExists( slugifiedTag ) ) collections.byTag[ slugifiedTag ] = [];
+							collections.byTag[ slugifiedTag ].append( page_prc );
+						}
+					}
+					// add page to types
+					if ( !collections.keyExists( page_prc.type ) && page_prc.type.len() )
+						collections[ page_prc.type ] = [];
+					if ( page_prc.type.len() ) collections[ lCase( page_prc.type ) ].append( page_prc );
+				} );
+			}
+		} );
 	}
 
 	/**
@@ -322,145 +534,6 @@ class {
 	}
 
 	/**
-	 * Generate templates based on paginated data
-	 */
-	function processPagination(){
-		templates.each( ( prc ) => {
-			if ( prc.keyExists( "pagination" ) ) {
-				var data      = prc.pagination.data;
-				var size      = prc.pagination.keyExists( "size" ) ? prc.pagination.size : 1;
-				var targetKey = prc.pagination.keyExists( "alias" ) ? prc.pagination.alias : "pagedData";
-				// data is a string, try to retrieve from variables
-				if ( isSimpleValue( data ) ) {
-					data = structGet( prc.pagination.data );
-					// if data is a structure, return the struct key list as an array
-					if ( isStruct( data ) ) {
-						// if data is a struct, return the struct keys for iteration
-						data = structKeyList( data ).listSort( "textnocase", "asc" ).listToArray();
-					}
-				}
-
-				// set the parent prc scope for the paginated templates
-				var parent_prc = duplicate( prc );
-
-				// ensure parent template is not rendered
-				prc.published = false;
-
-				var paged = paginate( data = data, pageSize = size );
-				paged.each( ( page, index ) => {
-					var page_prc          = duplicate( parent_prc );
-					var rendered_content  = "";
-					page_prc[ targetKey ] = page;
-					page_prc.permalink    = page_prc.permalink.replace( "{{" & targetKey & "}}", page );
-					page_prc.outFile      = cwd & config.outputDir & page_prc.permalink;
-					if ( isSimpleValue( prc.pagination.data ) && isStruct( structGet( prc.pagination.data ) ) ) {
-						page_prc.append( structGet( prc.pagination.data )[ page ] );
-					}
-					getPermalink( page_prc );
-					templates.append( page_prc );
-					// tag and template type processing
-					if ( page_prc.keyExists( "tags" ) && page_prc.tags.len() ) {
-						for ( var tag in page_prc.tags ) {
-							if ( !collections.tags.findNoCase( tag ) ) collections.tags.append( tag );
-							var slugifiedTag = generateSlug( tag );
-							if ( !collections.byTag.keyExists( slugifiedTag ) ) collections.byTag[ slugifiedTag ] = [];
-							collections.byTag[ slugifiedTag ].append( page_prc );
-						}
-					}
-					// add page to types
-					if ( !collections.keyExists( page_prc.type ) && page_prc.type.len() )
-						collections[ page_prc.type ] = [];
-					if ( page_prc.type.len() ) collections[ lCase( page_prc.type ) ].append( page_prc );
-				} );
-			}
-		} );
-	}
-
-	/**
-	 * Calculate the output filename
-	 *
-	 * @prc request context for the page
-	 */
-	function getOutfile( required struct prc ){
-		// Cache site directory prefix
-		var siteDir = cwd & "_site";
-		var outFile = "";
-
-		if (prc.type == "post") {
-			// For posts, use slug (or fileSlug) and file extension
-			var relPathArr = prc.inFile.replace(cwd, "").listToArray("/");
-			if (relPathArr.len()) {
-				relPathArr[relPathArr.len()] = (prc.keyExists("slug") ? prc.slug : prc.fileSlug) & "." & prc.fileExt;
-				outFile = siteDir & "/" & relPathArr.toList("/");
-			}
-		} else if (len(prc.permalink)) {
-			// If permalink is set, use it
-			outFile = siteDir & prc.permalink;
-			var stem = listLast(prc.permalink, "/");
-			if (stem.find(".")) {
-				prc.fileExt = stem.listRest(".");
-			} else {
-				prc.fileExt = "";
-			}
-		} else {
-			// Default: use input file's directory and name
-			var fileName = getFileFromPath(prc.inFile).listFirst(".");
-			var outDir = getDirectoryFromPath(prc.inFile).replace(cwd, "/");
-			outFile = siteDir & outDir & fileName & "." & prc.fileExt;
-		}
-		prc.outfile = outFile;
-	}
-
-	/**
-	 * Calculate permalink
-	 *
-	 * @prc request context for the page
-	 */
-	function getPermalink( required struct prc ){
-		// Remove _site/ prefix and split path into array
-		var sitePrefix = cwd & "_site/";
-		var relPath = prc.outFile.replace(sitePrefix, "");
-		var pathParts = relPath.listToArray("/");
-
-		// Handle last part: remove .html extension and "index" filename
-		var lastIdx = pathParts.len();
-		if (lastIdx > 0) {
-			var lastPart = pathParts[lastIdx];
-			if (prc.fileExt == "html") lastPart = lastPart.listFirst(".");
-			if (lastPart == "index") lastPart = "";
-			pathParts[lastIdx] = lastPart;
-		}
-
-		// Remove empty trailing part if present
-		if (pathParts.len() > 0 && pathParts[pathParts.len()] == "") pathParts.deleteAt(pathParts.len());
-
-		// Join parts to form permalink
-		prc.permalink = "/" & pathParts.toList("/");
-	}
-
-	/**
-	 * a function to quickly paginate data
-	 *
-	 * @data     the data to be paginated
-	 * @pageSize items per page
-	 */
-	function paginate( required array data, required numeric pageSize ){
-		var output       = [];
-		var currentChunk = 1;
-
-		if ( pageSize > 1 ) output[ 1 ] = [];
-		data.each( ( item, index ) => {
-			if ( pageSize > 1 ) {
-				output[ currentChunk ].append( item );
-			} else {
-				output.append( item, true );
-			}
-			if ( index % pageSize == 0 && index < data.len() && pageSize > 1 ) output[ ++currentChunk ] = [];
-		} );
-		return output;
-	}
-
-	/**
 	 * returns rendered html for a template and view
 	 *
 	 * @prc request context for the current page
@@ -533,76 +606,5 @@ class {
 		return prc.fileExt == "html" ? htmlParse( renderedHtml ).html() : renderedHtml;
 	}
 
-	/**
-	 * Generates data for `collections` scope
-	 */
-	function processCollectionsData(){
-		// Add templates to collections
-		templates.each((template) => {
-			var type = template.type ?: "";
-			var isPaginated = template.keyExists("pagination");
-			if (!template.excludeFromCollections && !isPaginated) {
-				collections.all.append(template);
-				if (type.len()) {
-					if (!collections.keyExists(type)) collections[type] = [];
-					collections[lCase(type)].append(template);
-				}
-			}
-		});
 
-		// Special processing for posts
-		if (collections.keyExists("post")) {
-			// Sort posts by date descending
-			collections.post.sort((e1, e2) => dateCompare(e2.date, e1.date));
-
-			// Build tag list and byTag mapping
-			collections.post.each((post) => {
-				if (post.keyExists("tags")) {
-					for (var tag in post.tags) {
-						if (!collections.tags.findNoCase(tag)) {
-							collections.tags.append(tag);
-						}
-						var slugifiedTag = slugify(tag);
-						if (!collections.byTag.keyExists(slugifiedTag)) collections.byTag[slugifiedTag] = [];
-						collections.byTag[slugifiedTag].append(post);
-					}
-				}
-			});
-			collections.tags = collections.tags.sort("text");
-		}
-	}
-
-	/**
-	 * Write generated content to files
-	 */
-	function generateStatic(){
-		templates.each( ( prc ) => {
-			if ( prc.published ) {
-				try{
-					var contents = renderTemplate( prc ).html() ?: renderTemplate( prc );
-					directoryCreate(
-						getDirectoryFromPath( prc.outFile ),
-						true,
-						true
-					);
-
-					if ( process.verbose ?: false ) {
-						print.greyline(
-							" [ " & prc.inFile & " ] -> " &
-							"/" & replace( prc.outFile, cwd, "", "all" ) &
-							"  [" & prc.fileExt & "]"
-						);
-					} else {
-						printLn( "Writing file: /" & replace( prc.outFile, cwd, "", "all" ) );
-					}
-					fileWrite( prc.outFile, contents );
-				}
-				catch ( any e ) {
-					printLn( prc);
-					printLn(e)
-					abort;
-				}
-			}
-		} );
-	}
 }
