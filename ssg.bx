@@ -603,9 +603,7 @@ class {
 
 		// if ( isXML( trim( toString(renderedHtml) ) ) ) prc.fileExt = "xml";
 
-
-		return prc.fileExt == "html" ? htmlParse( renderedHtml ).html() : renderedHtml;
+		return prc.fileExt == "html" ? htmlParse( renderedHtml ).html() : trim(renderedHtml);
 	}
-
 
 }
