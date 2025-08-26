@@ -1,0 +1,24 @@
+class {
+
+	function checkModules() {
+		var out = "";
+		bx:execute variable="out" name="install-bx-module" arguments="--list";
+		var required = ["bx-jsoup", "bx-markdown", "bx-yaml"];
+		var missing = [];
+		required.forEach(function(module) {
+			if (!out.findNoCase(module)) {
+				missing.push(module);
+			}
+		});
+		if (missing.len() > 0) {
+			modules = missing.toList(", ");
+			printLn("Installing missing required modules: " & modules);
+			bx:execute variable="out" name="install-bx-module" arguments=modules;
+		}
+	}
+
+	function main(args = []){
+		printLn("Checking for required modules");
+		checkModules();
+	}
+}
