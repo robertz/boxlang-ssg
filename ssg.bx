@@ -79,7 +79,9 @@ class {
 		templates.each( ( prc ) => {
 			if ( prc.published ) {
 				try{
-					var contents = renderTemplate( prc );
+					// trim whitespace
+					var contents = renderTemplate( prc ).listToArray(char(10)).filter(line => len(trim(line)) > 0).toList(char(10)) & char(10);
+
 					directoryCreate(
 						getDirectoryFromPath( prc.outFile ),
 						true,
@@ -491,9 +493,11 @@ class {
 			"fileExt"                : "html",
 			"excludeFromCollections" : false
 		};
-
+		var userFileExt = "";
 		// Merge front matter from template
-		prc.append(getTemplateData(template));
+		var templateData = getTemplateData(template);
+		if(templateData.keyExists("fileExt") && templateData.fileExt != "") userFileExt = templateData.fileExt;
+		prc.append(templateData);
 
 		// Merge layout metadata if available, without overwriting
 		var layoutMeta = baseData.layouts.keyExists(prc.layout) ? baseData.layouts[prc.layout] : false;
@@ -510,7 +514,6 @@ class {
 		// Only process if published is true
 		if (isBoolean(prc.published) && prc.published) {
 			getOutfile(prc);
-
 			// Handle permalinks
 			if (len(prc.permalink)) {
 				prc.outFile = cwd & "_site" & prc.permalink;
@@ -519,16 +522,15 @@ class {
 				var slug = lastSeg.listFirst(".");
 				var ext  = lastSeg.listRest(".");
 				prc.permalink = "/" & permArr.toList("/");
-				prc.fileExt   = len(ext) ? ext : "html";
+				prc.fileExt   = len(ext) ? ext : prc.fileExt;
+				if(len(userFileExt)) prc.fileExt = userFileExt;
 			} else {
 				getPermalink(prc);
 			}
-
 			// Set view to type if not already set
 			if (!prc.view.len() && prc.type.len()) {
 				prc.view = prc.type;
 			}
-
 			// Add processed template to collections
 			templates.append(prc);
 		}
