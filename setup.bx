@@ -1,24 +1,47 @@
 class {
+	// Project root directory
+	variables.cwd = expandPath(".") & "/";
+	// List of required modules
+	variables.required = [];
 
-	function checkModules() {
-		var out = "";
-		bx:execute variable="out" name="install-bx-module" arguments="--list";
-		var required = ["bx-jsoup", "bx-markdown", "bx-yaml"];
-		var missing = [];
-		required.forEach(function(module) {
-			if (!out.findNoCase(module)) {
-				missing.push(module);
-			}
-		});
-		if (missing.len() > 0) {
-			modules = missing.toList(", ");
-			printLn("Installing missing required modules: " & modules);
-			bx:execute variable="out" name="install-bx-module" arguments=modules;
+	/**
+	 * Reads the requirements.txt file and returns a list of required modules
+	 */
+	function readRequirements() {
+		try {
+			var filePath = variables.cwd & "requirements.txt";
+			var content = fileRead(filePath);
+			return content.listToArray(char(10)).filter(line => line.trim() != "");
+		} catch (any e) {
+			printLn("Error reading requirements: " & e.message);
+			cliExit(1);
 		}
 	}
 
-	function main(args = []){
-		printLn("Checking for required modules");
-		checkModules();
+	/**
+	 * Checks for missing modules and installs them if needed
+	 */
+	function checkAndInstallModules() {
+		var installed = "";
+		bx:execute variable="installed" name="install-bx-module" arguments="--list";
+		var missing = variables.required.filter(module => !installed.findNoCase(module));
+
+		if (missing.len()) {
+			var modulesList = missing.toList(", ");
+			printLn("Installing missing required modules: " & modulesList);
+			bx:execute variable="installed" name="install-bx-module" arguments=modulesList;
+		} else {
+			printLn("All required modules are already installed.");
+		}
+	}
+
+	/**
+	 * Main entry point
+	 */
+	function main(args = []) {
+		variables.required = readRequirements();
+		printLn("Checking for required modules...");
+		checkAndInstallModules();
+		cliExit(0);
 	}
 }
