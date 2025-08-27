@@ -11,7 +11,13 @@ class {
 		try {
 			var filePath = variables.cwd & "requirements.txt";
 			var content = fileRead(filePath);
-			return content.listToArray(char(10)).filter(line => line.trim() != "");
+			return content.listToArray(char(10)).filter(line => line.trim() != "")
+				.map(line => {
+					return {
+						name: line.listFirst("@"),
+						version: line.listRest("@").len() ? line.listRest("@") : "any"
+					};
+				});
 		} catch (any e) {
 			printLn("Error reading requirements: " & e.message);
 			cliExit(1);
@@ -22,14 +28,41 @@ class {
 	 * Checks for missing modules and installs them if needed
 	 */
 	function checkAndInstallModules() {
-		var installed = "";
-		bx:execute variable="installed" name="install-bx-module" arguments="--list";
-		var missing = variables.required.filter(module => !installed.findNoCase(module));
+		// Get list of installed modules
+		var installedRaw = "";
+		bx:execute variable="installedRaw" name="install-bx-module" arguments="--list";
+		var installedModules = installedRaw.listToArray(char(10)).filter(line => line.trim() != "");
 
+		var missing = [];
+		// Check each required module
+		variables.required.each(module => {
+			// Find module in installed list
+			var foundIdx = 0;
+			installedModules.each((installed, idx) => {
+				if (installed.findNoCase(module.name)) {
+					foundIdx = idx;
+					return;
+				}
+			});
+			var isInstalled = foundIdx > 0;
+			// If version is specified, check for version match
+			if (isInstalled) {
+				var installedLine = installedModules[foundIdx];
+				if (module.version != "any" && !installedLine.findNoCase(module.version.listFirst("+"))) {
+					isInstalled = false;
+					missing.push(module.name & "@" & module.version.listFirst("+"));
+				}
+			}
+			else if (!isInstalled) {
+				missing.push(module.version == "any" ? module.name : module.name & "@" & module.version.listFirst("+"));
+			}
+		});
+
+		// Install missing modules if any
 		if (missing.len()) {
 			var modulesList = missing.toList(", ");
 			printLn("Installing missing required modules: " & modulesList);
-			bx:execute variable="installed" name="install-bx-module" arguments=modulesList;
+			bx:execute variable="installedRaw" name="install-bx-module" arguments=modulesList;
 		} else {
 			printLn("All required modules are already installed.");
 		}
@@ -40,6 +73,7 @@ class {
 	 */
 	function main(args = []) {
 		variables.required = readRequirements();
+
 		printLn("Checking for required modules...");
 		checkAndInstallModules();
 		cliExit(0);

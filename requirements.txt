@@ -1,3 +1,3 @@
 bx-jsoup
-bx-markdown
+bx-markdown@1.0.0
 bx-yaml
