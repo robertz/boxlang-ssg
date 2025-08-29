@@ -6,7 +6,7 @@ class {
 		ignore: [],
 		passthru: []
 	};
-	variables.ignoreDirs = [ cwd & "_includes/", cwd & ".", cwd & "_site/" ];
+	variables.ignoreDirs = [ cwd & "_includes/", cwd & "." ];
 	variables.collections = { "all" : [], "tags" : [], "byTag" : {}, "global" : {} };
 	variables.process = {};
 	variables.baseData    = { "layouts" : {}, "views" : {} };
