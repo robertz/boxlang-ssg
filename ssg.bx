@@ -182,7 +182,7 @@ class {
 	 */
 	function getOutfile( required struct prc ){
 		// Cache site directory prefix
-		var siteDir = cwd & "_site";
+		var siteDir = cwd & config.outputDir;
 		var outFile = "";
 
 		if (prc.type == "post") {
@@ -207,7 +207,7 @@ class {
 			var outDir = getDirectoryFromPath(prc.inFile).replace(cwd, "/");
 			outFile = siteDir & outDir & fileName & "." & prc.fileExt;
 		}
-		prc.outfile = outFile;
+		prc.outFile = outFile;
 	}
 
 	/**
@@ -217,7 +217,7 @@ class {
 	 */
 	function getPermalink( required struct prc ){
 		// Remove _site/ prefix and split path into array
-		var sitePrefix = cwd & "_site/";
+		var sitePrefix = cwd & config.outputDir & "/";
 		var relPath = prc.outFile.replace(sitePrefix, "");
 		var pathParts = relPath.listToArray("/");
 
@@ -253,11 +253,14 @@ class {
 	 * Load the current build configuration from file if it exists, otherweise return defaults
 	 */
 	function getSSGConfig(){
-		try {
-			variables.config = JSONDeserialize( fileRead( variables.cwd & "ssg-config.json", "utf-8" ) );
-			for ( var dir in config.ignore ) {
-				if ( directoryExists( variables.cwd & dir ) ) ignoreDirs.append( variables.cwd & dir );
-			}
+        try {
+            variables.config = JSONDeserialize( fileRead( variables.cwd & "ssg-config.json", "utf-8" ) );
+            for ( var dir in config.ignore ) {
+                if ( directoryExists( variables.cwd & dir ) ) ignoreDirs.append( variables.cwd & dir );
+            }
+            // always ignore the configured output directory
+            var outDirIgnore = variables.cwd & config.outputDir & "/";
+            if ( !ignoreDirs.find( outDirIgnore ) ) ignoreDirs.append( outDirIgnore );
 		} catch ( any e ) {
 			printLn( "Error loading SSG config: " & e.message );
 		}
@@ -429,7 +432,7 @@ class {
 					if ( page_prc.keyExists( "tags" ) && page_prc.tags.len() ) {
 						for ( var tag in page_prc.tags ) {
 							if ( !collections.tags.findNoCase( tag ) ) collections.tags.append( tag );
-							var slugifiedTag = generateSlug( tag );
+							var slugifiedTag = slugify( tag );
 							if ( !collections.byTag.keyExists( slugifiedTag ) ) collections.byTag[ slugifiedTag ] = [];
 							collections.byTag[ slugifiedTag ].append( page_prc );
 						}
@@ -438,6 +441,8 @@ class {
 					if ( !collections.keyExists( page_prc.type ) && page_prc.type.len() )
 						collections[ page_prc.type ] = [];
 					if ( page_prc.type.len() ) collections[ lCase( page_prc.type ) ].append( page_prc );
+					// add to all collection unless excluded
+					if ( !page_prc.excludeFromCollections ) collections.all.append( page_prc );
 				} );
 			}
 		} );
@@ -448,20 +453,20 @@ class {
 	 */
 	function processPassthruFiles(){
 		// delete the _site directory if it exists
-		if ( directoryExists( cwd & "_site" ) ) {
-			directoryDelete( cwd & "_site", true );
+		if ( directoryExists( cwd & config.outputDir ) ) {
+			directoryDelete( cwd & config.outputDir, true );
 		}
 		// recreate the directory
-		directoryCreate( cwd & "_site" );
+		directoryCreate( cwd & config.outputDir );
 
 		try {
 			// passthru directories
 			for ( var dir in config.passthru ) {
-				if ( fileExists( cwd & dir ) ) {
-					fileCopy( cwd & dir, cwd & "_site/" & dir );
-				} else {
-					directoryCopy( cwd & dir, cwd & "_site/" & dir, true );
-				}
+					if ( fileExists( cwd & dir ) ) {
+						fileCopy( cwd & dir, cwd & config.outputDir & "/" & dir );
+					} else {
+						directoryCopy( cwd & dir, cwd & config.outputDir & "/" & dir, true );
+					}
 			}
 		} catch ( any e ) {
 			error( e.message );
@@ -515,8 +520,8 @@ class {
 		if (isBoolean(prc.published) && prc.published) {
 			getOutfile(prc);
 			// Handle permalinks
-			if (len(prc.permalink)) {
-				prc.outFile = cwd & "_site" & prc.permalink;
+				if (len(prc.permalink)) {
+					prc.outFile = cwd & config.outputDir & prc.permalink;
 				var permArr = prc.permalink.listToArray("/");
 				var lastSeg = permArr.len() ? permArr[permArr.len()] : "";
 				var slug = lastSeg.listFirst(".");
@@ -575,7 +580,7 @@ class {
 			// template is markdown
 			if ( prc.inFile.findNoCase( ".md" ) ) {
 
-				if ( process.hasIncludes && process.views.find( prc.view ) ) {
+				if ( process.hasIncludes && process.views.find( prc.view ) && prc.layout != "none" ) {
 					template =  cwd & "_includes/" & prc.view & ".bxm";
 					bx:savecontent variable="renderedHtml" {
 						include template;
