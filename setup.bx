@@ -11,11 +11,15 @@ class {
 		try {
 			var filePath = variables.cwd & "requirements.txt";
 			var content = fileRead(filePath);
-			return content.listToArray(char(10)).filter(line => line.trim() != "")
+			return content
+				.listToArray(char(10))
+				// Strip inline comments and blanks
+				.map(line => line.listFirst("##").trim())
+				.filter(line => line.trim() != "")
 				.map(line => {
 					return {
-						name: line.listFirst("@"),
-						version: line.listRest("@").len() ? line.listRest("@") : "any"
+						name: line.listFirst("@").trim(),
+						version: line.listRest("@").len() ? line.listRest("@").trim() : "any"
 					};
 				});
 		} catch (any e) {
@@ -33,34 +37,47 @@ class {
 		bx:execute variable="installedRaw" name="install-bx-module" arguments="--list";
 		var installedModules = installedRaw.listToArray(char(10)).filter(line => line.trim() != "");
 
-		var missing = [];
-		// Check each required module
-		variables.required.each(module => {
-			// Find module in installed list
-			var foundIdx = 0;
-			installedModules.each((installed, idx) => {
-				if (installed.findNoCase(module.name)) {
-					foundIdx = idx;
-					return;
-				}
-			});
-			var isInstalled = foundIdx > 0;
-			// If version is specified, check for version match
-			if (isInstalled) {
-				var installedLine = installedModules[foundIdx];
-				if (module.version != "any" && !installedLine.findNoCase(module.version.listFirst("+"))) {
-					isInstalled = false;
-					missing.push(module.name & "@" & module.version.listFirst("+"));
-				}
+		// Build an index of installed modules: name -> version
+		var installedIndex = {};
+		installedModules.each(line => {
+			line = line.trim();
+			// Expect lines like: "✓ bx-jsoup (1.0.0+1)"; skip headers/others
+			var hasCheck = line.find("✓") > 0;
+			var hasParen = line.find("(") > 0 && line.find(")") > 0;
+			if (!hasCheck || !hasParen) return;
+
+			var before = line.listFirst("(");
+			var name = before.listLast(" ").trim();
+			var version = line.listRest("(").listFirst(")").trim();
+			if (name.len() && version.len()) {
+				installedIndex[name] = version;
 			}
-			else if (!isInstalled) {
-				missing.push(module.version == "any" ? module.name : module.name & "@" & module.version.listFirst("+"));
+		});
+
+		var missing = [];
+		// Check each required module against the index
+		variables.required.each(module => {
+			var name = module.name;
+			var requiredAny = module.version == "any";
+			var requiredPrefix = requiredAny ? "" : module.version.listFirst("+");
+
+			var isInstalled = structKeyExists(installedIndex, name);
+			if (isInstalled) {
+				if (!requiredAny) {
+					var installedVersion = installedIndex[name];
+					var installedPrefix = installedVersion.listFirst("+");
+					if (installedPrefix != requiredPrefix) {
+						missing.push(name & "@" & requiredPrefix);
+					}
+				}
+			} else {
+				missing.push(requiredAny ? name : name & "@" & requiredPrefix);
 			}
 		});
 
 		// Install missing modules if any
 		if (missing.len()) {
-			var modulesList = missing.toList(", ");
+			var modulesList = missing.toList(" ");
 			printLn("Installing missing required modules: " & modulesList);
 			bx:execute variable="installedRaw" name="install-bx-module" arguments=modulesList;
 		} else {
