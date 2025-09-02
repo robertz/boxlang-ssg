@@ -81,7 +81,6 @@ class {
 				try{
 					// trim whitespace
 					var contents = renderTemplate( prc ).listToArray(char(10)).filter(line => len(trim(line)) > 0).toList(char(10)) & char(10);
-
 					directoryCreate(
 						getDirectoryFromPath( prc.outFile ),
 						true,
@@ -100,8 +99,8 @@ class {
 					fileWrite( prc.outFile, contents );
 				}
 				catch ( any e ) {
-					printLn( prc);
-					printLn(e)
+					printLn( "generateStatic | Error rendering template: ");
+					printLn(prc);
 					abort;
 				}
 			}
@@ -417,16 +416,63 @@ class {
 				prc.published = false;
 
 				var paged = paginate( data = data, pageSize = size );
+
+				// Precompute per-page permalinks for navigation
+				var pagePermalinks = [];
+				for ( var i = 1; i <= paged.len(); i++ ) {
+					var candidate = parent_prc.permalink;
+					var pageVal   = paged[ i ];
+					// Replace alias placeholder only when the page value is simple (size == 1 case)
+					if ( size == 1 && isSimpleValue( pageVal ) ) {
+						candidate = candidate.replace( "{{" & targetKey & "}}", pageVal );
+					}
+					// Support page number placeholders
+					if ( candidate.findNoCase( "{{page}}" ) ) candidate = candidate.replace( "{{page}}", i );
+					if ( candidate.findNoCase( "{{pageNumber}}" ) ) candidate = candidate.replace( "{{pageNumber}}", i );
+					pagePermalinks[ i ] = candidate;
+				}
+
 				paged.each( ( page, index ) => {
 					var page_prc          = duplicate( parent_prc );
-					var rendered_content  = "";
 					page_prc[ targetKey ] = page;
-					page_prc.permalink    = page_prc.permalink.replace( "{{" & targetKey & "}}", page );
+					// Build this page's permalink
+					var builtPermalink    = pagePermalinks[ index ];
+					// If alias placeholder still exists and `page` is not simple, leave as-is to avoid invalid replacement
+					page_prc.permalink    = builtPermalink;
 					page_prc.outFile      = cwd & config.outputDir & page_prc.permalink;
-					if ( isSimpleValue( prc.pagination.data ) && isStruct( structGet( prc.pagination.data ) ) ) {
+					// If the original data reference was a struct and the page is a single key, merge that data
+					if (
+						isSimpleValue( prc.pagination.data ) &&
+						isStruct( structGet( prc.pagination.data ) ) &&
+						isSimpleValue( page )
+					) {
 						page_prc.append( structGet( prc.pagination.data )[ page ] );
 					}
 					getPermalink( page_prc );
+
+					// Inject pagination navigation info
+					var totalPages  = paged.len();
+					var totalItems  = isArray( data ) ? data.len() : 0;
+					var nav = {
+						"pageNumber"  : index,
+						"pageSize"    : size,
+						"totalPages"  : totalPages,
+						"totalItems"  : totalItems,
+						"href"        : {
+							"current" : page_prc.permalink,
+							"previous": ( index > 1 ) ? pagePermalinks[ index - 1 ].replace("/index.html", "") : "",
+							"next"    : ( index < totalPages ) ? pagePermalinks[ index + 1 ].replace("/index.html", "") : "",
+							"first"   : pagePermalinks[ 1 ].replace("/index.html", ""),
+							"last"    : pagePermalinks[ totalPages ].replace("/index.html", "")
+						}
+					};
+					// Add a simple list of pages [{number, href, current}]
+					nav[ "pages" ] = [];
+					for ( var p = 1; p <= totalPages; p++ ) {
+						nav.pages.append({ "number": p, "href": pagePermalinks[ p ], "current": p == index });
+					}
+					page_prc[ "paginationInfo" ] = nav;
+
 					templates.append( page_prc );
 					// tag and template type processing
 					if ( page_prc.keyExists( "tags" ) && page_prc.tags.len() ) {
@@ -604,8 +650,7 @@ class {
 			}
 
 		} catch ( any e ) {
-			dump(prc);
-			printLn( "Error rendering template: " & e.message );
+			printLn( "renderTemplate | Error rendering template: " & e.message );
 		}
 
 		// if ( isXML( trim( toString(renderedHtml) ) ) ) prc.fileExt = "xml";

@@ -1,0 +1,22 @@
+<!---
+layout: main
+view: page
+title: Jokes
+permalink: /jokes/page/{{page}}/index.html
+pagination:
+  data: collections.global.jokes.jokes
+  size: 5
+published: true
+--->
+<bx:output>
+<bx:loop from="1" to="#prc.pagedData.len()#" index="i">
+	<p>#prc.pagedData[i]#</p>
+</bx:loop>
+
+<bx:if prc.paginationInfo.href.previous.len()>
+	<a href="#prc.paginationInfo.href.previous#" class="pagination-previous">Previous</a>
+</bx:if>
+<bx:if prc.paginationInfo.href.next.len()>
+	<a href="#prc.paginationInfo.href.next#" class="pagination-next">Next</a>
+</bx:if>
+</bx:output>
