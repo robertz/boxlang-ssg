@@ -20,7 +20,7 @@ class {
 	function build(){
 		processPassthruFiles();
 		variables.documents.each(doc => {
-			printLn("Processing document: " & doc.path & doc.name);
+			if ( process.verbose ?: false ) printLn("Processing document: " & doc.path & doc.name);
 			processTemplate(doc.path & doc.name);
 		});
 		// processTemplate must have fun to exec the following
@@ -39,11 +39,13 @@ class {
 		}
 
 		getProcessConfig();
+		// Load config before scanning so ignores/outputDir are respected
+		if(variables.process.hasConfig) getSSGConfig();
 		listDocuments();
 		if(variables.process.hasIncludes) getIncludes();
 		if(variables.process.hasData) getGlobalData();
 		if(variables.process.applicationHelper) getApplicationHelper();
-		if(variables.process.hasConfig) getSSGConfig();
+		// getSSGConfig() moved earlier
 
 		var command = args[1];
 
@@ -79,8 +81,13 @@ class {
 		templates.each( ( prc ) => {
 			if ( prc.published ) {
 				try{
-					// trim whitespace
-					var contents = renderTemplate( prc ).listToArray(char(10)).filter(line => len(trim(line)) > 0).toList(char(10)) & char(10);
+					// Render content; optionally trim whitespace if enabled
+					var rendered = renderTemplate( prc );
+					var contents = rendered;
+					if ( (config.minify ?: false) ) {
+						contents = rendered.listToArray(char(10)).filter(line => len(trim(line)) > 0).toList(char(10)) & char(10);
+					}
+
 					directoryCreate(
 						getDirectoryFromPath( prc.outFile ),
 						true,
@@ -99,8 +106,8 @@ class {
 					fileWrite( prc.outFile, contents );
 				}
 				catch ( any e ) {
-					printLn( "generateStatic | Error rendering template: ");
-					printLn(prc);
+					printLn( prc);
+					printLn(e)
 					abort;
 				}
 			}
@@ -124,6 +131,7 @@ class {
 	function getGlobalData(){
 		// Load all .json files from _data directory recursively
 		var dataDir = cwd & "_data";
+		if ( !directoryExists( dataDir ) ) return;
 		var jsonFiles = directoryList(dataDir, true, "path", (any path) => path.findNoCase(".json"));
 
 		jsonFiles.each((dataFile) => {
@@ -153,7 +161,7 @@ class {
 		var layoutsDir = cwd & "_includes/layouts";
 		var includesDir = cwd & "_includes";
 
-		var layouts = directoryList(layoutsDir, false, "path", "*.bxm");
+		var layouts = directoryExists(layoutsDir) ? directoryList(layoutsDir, false, "path", "*.bxm") : [];
 		layouts.each((layout) => {
 			var stem = listFirst(getFileFromPath(layout), ".");
 			process.layouts.append(stem);
@@ -161,9 +169,9 @@ class {
 			if (data.keyExists("content")) data.delete("content");
 			baseData["layouts"][stem] = data;
 		});
-		var views = directoryList(includesDir, false, "path", (path) => {
-			return !path.findNoCase("layouts") && !path.findNoCase("applicationHelper.bxm");
-		});
+		var views = directoryExists(includesDir) ? directoryList(includesDir, false, "path", (path) => {
+			return path.findNoCase(".bxm") && !path.findNoCase("layouts") && !path.findNoCase("applicationHelper.bxm");
+		}) : [];
 		views.each((view) => {
 			var stem = listFirst(getFileFromPath(view), ".");
 			process.views.append(stem);
@@ -192,13 +200,18 @@ class {
 				outFile = siteDir & "/" & relPathArr.toList("/");
 			}
 		} else if (len(prc.permalink)) {
-			// If permalink is set, use it
-			outFile = siteDir & prc.permalink;
-			var stem = listLast(prc.permalink, "/");
-			if (stem.find(".")) {
-				prc.fileExt = stem.listRest(".");
+			// If permalink is set and ends with '/', write to index.html under that path
+			if ( right(prc.permalink,1) == "/" ) {
+				outFile = siteDir & prc.permalink & "index.html";
+				prc.fileExt = "html";
 			} else {
-				prc.fileExt = "";
+				outFile = siteDir & prc.permalink;
+				var stem = listLast(prc.permalink, "/");
+				if (stem.find(".")) {
+					prc.fileExt = stem.listRest(".");
+				} else {
+					prc.fileExt = "";
+				}
 			}
 		} else {
 			// Default: use input file's directory and name
@@ -222,18 +235,20 @@ class {
 
 		// Handle last part: remove .html extension and "index" filename
 		var lastIdx = pathParts.len();
+		var addTrailingSlash = false;
 		if (lastIdx > 0) {
 			var lastPart = pathParts[lastIdx];
 			if (prc.fileExt == "html") lastPart = lastPart.listFirst(".");
-			if (lastPart == "index") lastPart = "";
+			if (lastPart == "index") { lastPart = ""; addTrailingSlash = true; }
 			pathParts[lastIdx] = lastPart;
 		}
 
 		// Remove empty trailing part if present
-		if (pathParts.len() > 0 && pathParts[pathParts.len()] == "") pathParts.deleteAt(pathParts.len());
+		if (pathParts.len() > 0 && pathParts[pathParts.len()] == "" && !addTrailingSlash) pathParts.deleteAt(pathParts.len());
 
 		// Join parts to form permalink
 		prc.permalink = "/" & pathParts.toList("/");
+		if ( addTrailingSlash && right(prc.permalink,1) != "/" ) prc.permalink &= "/";
 	}
 
 	/**
@@ -317,9 +332,10 @@ class {
 	 */
 	function listDocuments(){
 		var fileList = directoryList(variables.cwd, true, "path", (any path) => {
-			return
-				((arguments.path.findNoCase(".md") || arguments.path.findNoCase(".bxm")) && !arguments.path.findNoCase("readme.md")) &&
-				!ignoreDirs.find((dir) => path.findNoCase(dir));
+			var p = arguments.path;
+			if ( !( p.findNoCase(".md") || p.findNoCase(".bxm") ) || p.findNoCase("readme.md") ) return false;
+			// Exclude any path that lives under an ignored directory prefix
+			return !ignoreDirs.find( (dir) => left( p, len(dir) ) == dir );
 		});
 		variables.documents = fileList.map((file) => {
 			return {
@@ -357,13 +373,13 @@ class {
 	function processCollectionsData(){
 		// Add templates to collections
 		templates.each((template) => {
-			var type = template.type ?: "";
+			var type = lCase( template.type ?: "" );
 			var isPaginated = template.keyExists("pagination");
 			if (!template.excludeFromCollections && !isPaginated) {
 				collections.all.append(template);
 				if (type.len()) {
 					if (!collections.keyExists(type)) collections[type] = [];
-					collections[lCase(type)].append(template);
+					collections[type].append(template);
 				}
 			}
 		});
@@ -394,7 +410,10 @@ class {
 	 * Generate templates based on paginated data
 	 */
 	function processPagination(){
-		templates.each( ( prc ) => {
+		var additions = [];
+		var originalLen = templates.len();
+		for ( var __i = 1; __i <= originalLen; __i++ ) {
+			var prc = templates[ __i ];
 			if ( prc.keyExists( "pagination" ) ) {
 				var data      = prc.pagination.data;
 				var size      = prc.pagination.keyExists( "size" ) ? prc.pagination.size : 1;
@@ -411,8 +430,13 @@ class {
 
 				// set the parent prc scope for the paginated templates
 				var parent_prc = duplicate( prc );
+				// If parent has no explicit permalink, base it on fileSlug
+				if ( !( parent_prc._explicitPermalink ?: false ) ) {
+					parent_prc.permalink = "/" & parent_prc.fileSlug & "/";
+					getOutfile( parent_prc );
+				}
 
-				// ensure parent template is not rendered
+				// ensure parent template is not rendered (mutate original entry)
 				prc.published = false;
 
 				var paged = paginate( data = data, pageSize = size );
@@ -426,20 +450,51 @@ class {
 					if ( size == 1 && isSimpleValue( pageVal ) ) {
 						candidate = candidate.replace( "{{" & targetKey & "}}", pageVal );
 					}
+
+					// If no placeholders present and this is a multi-item pagination,
+					// generate conventional "/page/<n>/" URLs for pages after the first
+					var hasPagePlaceholders = candidate.findNoCase( "{{page}}" ) || candidate.findNoCase( "{{pageNumber}}" );
+					if ( size > 1 && !hasPagePlaceholders && i > 1 ) {
+						if ( right(candidate,1) != "/" ) candidate &= "/";
+						candidate &= "page/" & i & "/";
+					}
+
 					// Support page number placeholders
 					if ( candidate.findNoCase( "{{page}}" ) ) candidate = candidate.replace( "{{page}}", i );
 					if ( candidate.findNoCase( "{{pageNumber}}" ) ) candidate = candidate.replace( "{{pageNumber}}", i );
 					pagePermalinks[ i ] = candidate;
 				}
+					// Ensure the first page uses the parent's permalink only for multi-item pages
+					if ( paged.len() >= 1 && size > 1 && !parent_prc.permalink.findNoCase("{{") ) pagePermalinks[ 1 ] = parent_prc.permalink;
 
 				paged.each( ( page, index ) => {
 					var page_prc          = duplicate( parent_prc );
 					page_prc[ targetKey ] = page;
 					// Build this page's permalink
 					var builtPermalink    = pagePermalinks[ index ];
-					// If alias placeholder still exists and `page` is not simple, leave as-is to avoid invalid replacement
-					page_prc.permalink    = builtPermalink;
-					page_prc.outFile      = cwd & config.outputDir & page_prc.permalink;
+					// If this is the first page, use canonical first URL
+					if ( index == 1 ) {
+						var canonicalFirst = builtPermalink;
+						if ( size > 1 ) {
+							var hasPlaceholder = parent_prc.permalink.findNoCase("{{page}}") || parent_prc.permalink.findNoCase("{{pageNumber}}");
+							if ( hasPlaceholder ) {
+								canonicalFirst = parent_prc.permalink;
+								canonicalFirst = canonicalFirst.replace("{{page}}", "");
+								canonicalFirst = canonicalFirst.replace("{{pageNumber}}", "");
+								// clean up any double slashes and ensure trailing slash
+								while ( canonicalFirst.find("//") ) canonicalFirst = canonicalFirst.replace("//", "/");
+								if ( right(canonicalFirst,1) != "/" ) canonicalFirst &= "/";
+							} else if ( !parent_prc.permalink.findNoCase("{{") ) {
+								canonicalFirst = parent_prc.permalink;
+							}
+						}
+						page_prc.permalink = canonicalFirst;
+						getOutfile( page_prc );
+					} else {
+						// For subsequent pages, use the built pagination permalink
+						page_prc.permalink = builtPermalink;
+						getOutfile( page_prc );
+					}
 					// If the original data reference was a struct and the page is a single key, merge that data
 					if (
 						isSimpleValue( prc.pagination.data ) &&
@@ -448,11 +503,27 @@ class {
 					) {
 						page_prc.append( structGet( prc.pagination.data )[ page ] );
 					}
-					getPermalink( page_prc );
-
+						getPermalink( page_prc );
 					// Inject pagination navigation info
 					var totalPages  = paged.len();
 					var totalItems  = isArray( data ) ? data.len() : 0;
+					// Canonical first href: if multi-item and parent has placeholders, strip them to get base; else use parent's permalink
+					var hasPlaceholder = parent_prc.permalink.findNoCase("{{page}}") || parent_prc.permalink.findNoCase("{{pageNumber}}");
+					var canonicalFirst = parent_prc.permalink;
+					if ( size > 1 ) {
+						if ( hasPlaceholder ) {
+							canonicalFirst = canonicalFirst.replace("{{page}}", "");
+							canonicalFirst = canonicalFirst.replace("{{pageNumber}}", "");
+							while ( canonicalFirst.find("//") ) canonicalFirst = canonicalFirst.replace("//", "/");
+							if ( right(canonicalFirst,1) != "/" ) canonicalFirst &= "/";
+						}
+					}
+					var prevHref = "";
+					if ( index > 1 ) {
+						prevHref = pagePermalinks[ index - 1 ];
+						// When navigating to page 1 in multi-item pagination, always use canonicalFirst
+						if ( index - 1 == 1 && size > 1 ) prevHref = canonicalFirst;
+					}
 					var nav = {
 						"pageNumber"  : index,
 						"pageSize"    : size,
@@ -460,20 +531,21 @@ class {
 						"totalItems"  : totalItems,
 						"href"        : {
 							"current" : page_prc.permalink,
-							"previous": ( index > 1 ) ? pagePermalinks[ index - 1 ].replace("/index.html", "") : "",
-							"next"    : ( index < totalPages ) ? pagePermalinks[ index + 1 ].replace("/index.html", "") : "",
-							"first"   : pagePermalinks[ 1 ].replace("/index.html", ""),
-							"last"    : pagePermalinks[ totalPages ].replace("/index.html", "")
+							"previous": prevHref,
+							"next"    : ( index < totalPages ) ? pagePermalinks[ index + 1 ] : "",
+							"first"   : canonicalFirst,
+							"last"    : pagePermalinks[ totalPages ]
 						}
 					};
 					// Add a simple list of pages [{number, href, current}]
 					nav[ "pages" ] = [];
 					for ( var p = 1; p <= totalPages; p++ ) {
-						nav.pages.append({ "number": p, "href": pagePermalinks[ p ], "current": p == index });
+						var pageHref = ( p == 1 ) ? canonicalFirst : pagePermalinks[ p ];
+						nav.pages.append({ "number": p, "href": pageHref, "current": p == index });
 					}
-					page_prc[ "paginationInfo" ] = nav;
+						page_prc[ "paginationInfo" ] = nav;
 
-					templates.append( page_prc );
+						additions.append( page_prc );
 					// tag and template type processing
 					if ( page_prc.keyExists( "tags" ) && page_prc.tags.len() ) {
 						for ( var tag in page_prc.tags ) {
@@ -491,7 +563,9 @@ class {
 					if ( !page_prc.excludeFromCollections ) collections.all.append( page_prc );
 				} );
 			}
-		} );
+		}
+		// Append after to avoid mutating during iteration
+		additions.each( (p) => templates.append( p ) );
 	}
 
 	/**
@@ -549,6 +623,8 @@ class {
 		var templateData = getTemplateData(template);
 		if(templateData.keyExists("fileExt") && templateData.fileExt != "") userFileExt = templateData.fileExt;
 		prc.append(templateData);
+		// Track if permalink was explicitly provided in front matter
+		prc._explicitPermalink = ( templateData.keyExists("permalink") && len(templateData.permalink) );
 
 		// Merge layout metadata if available, without overwriting
 		var layoutMeta = baseData.layouts.keyExists(prc.layout) ? baseData.layouts[prc.layout] : false;
@@ -564,17 +640,17 @@ class {
 
 		// Only process if published is true
 		if (isBoolean(prc.published) && prc.published) {
+			// Build output file path initially
 			getOutfile(prc);
-			// Handle permalinks
-				if (len(prc.permalink)) {
-					prc.outFile = cwd & config.outputDir & prc.permalink;
-				var permArr = prc.permalink.listToArray("/");
-				var lastSeg = permArr.len() ? permArr[permArr.len()] : "";
-				var slug = lastSeg.listFirst(".");
-				var ext  = lastSeg.listRest(".");
-				prc.permalink = "/" & permArr.toList("/");
-				prc.fileExt   = len(ext) ? ext : prc.fileExt;
-				if(len(userFileExt)) prc.fileExt = userFileExt;
+			// Handle permalinks while preserving trailing slash
+			if (len(prc.permalink)) {
+				// Ensure leading slash only; do not strip trailing slash
+				if ( left(prc.permalink,1) != "/" ) prc.permalink = "/" & prc.permalink;
+				var lastSeg = listLast(prc.permalink, "/");
+				if ( lastSeg.find(".") ) prc.fileExt = lastSeg.listRest(".");
+				if ( len(userFileExt) ) prc.fileExt = userFileExt;
+				// Recompute outFile to align with final permalink + fileExt
+				getOutfile(prc);
 			} else {
 				getPermalink(prc);
 			}
@@ -650,12 +726,17 @@ class {
 			}
 
 		} catch ( any e ) {
-			printLn( "renderTemplate | Error rendering template: " & e.message );
+			dump(prc);
+			printLn( "Error rendering template: " & e.message );
 		}
 
 		// if ( isXML( trim( toString(renderedHtml) ) ) ) prc.fileExt = "xml";
 
-		return prc.fileExt == "html" ? htmlParse( renderedHtml ).html() : trim(renderedHtml);
+		// Optionally tidy HTML (can be expensive); otherwise return as-is
+		if ( prc.fileExt == "html" ) {
+			return ( config.tidyHtml ?: false ) ? htmlParse( renderedHtml ).html() : trim( renderedHtml );
+		}
+		return trim( renderedHtml );
 	}
 
 }
