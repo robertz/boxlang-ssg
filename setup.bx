@@ -58,8 +58,18 @@ class {
 		// Check each required module against the index
 		variables.required.each(module => {
 			var name = module.name;
+			// Reject any name that contains characters outside safe module-name set
+			if ( !reFind( "^[a-z0-9][a-z0-9\-]*$", name ) ) {
+				printLn( "ERROR: Unsafe module name rejected: '" & name & "'" );
+				cliExit( 1 );
+			}
 			var requiredAny = module.version == "any";
 			var requiredPrefix = requiredAny ? "" : module.version.listFirst("+");
+			// Validate version string as well
+			if ( !requiredAny && !reFind( "^[\d][\d\.]*$", requiredPrefix ) ) {
+				printLn( "ERROR: Unsafe version string rejected for module '" & name & "': '" & requiredPrefix & "'" );
+				cliExit( 1 );
+			}
 
 			var isInstalled = structKeyExists(installedIndex, name);
 			if (isInstalled) {
