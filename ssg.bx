@@ -106,9 +106,8 @@ class {
 					fileWrite( prc.outFile, contents );
 				}
 				catch ( any e ) {
-					printLn( prc);
-					printLn(e)
-					abort;
+					printLn( "ERROR writing file '" & (prc.outFile ?: "") & "': " & e.message );
+					cliExit( 1 );
 				}
 			}
 		} );
@@ -183,6 +182,18 @@ class {
 	}
 
 	/**
+	 * Sanitize a slug value so it cannot escape the output directory.
+	 * Strips leading slashes, dots-only segments, and path-traversal sequences.
+	 */
+	private string function sanitizeSlug( required string slug ){
+		var s = reReplace( arguments.slug, "[/\\]", "-", "all" );
+		s = reReplace( s, "\.{2,}", "", "all" );
+		s = trim( s );
+		if ( !len( s ) ) s = "index";
+		return s;
+	}
+
+	/**
 	 * Calculate the output filename
 	 *
 	 * @prc request context for the page
@@ -196,7 +207,8 @@ class {
 			// For posts, use slug (or fileSlug) and file extension
 			var relPathArr = prc.inFile.replace(cwd, "").listToArray("/");
 			if (relPathArr.len()) {
-				relPathArr[relPathArr.len()] = (prc.keyExists("slug") ? prc.slug : prc.fileSlug) & "." & prc.fileExt;
+				var rawSlug = prc.keyExists("slug") ? prc.slug : prc.fileSlug;
+				relPathArr[relPathArr.len()] = sanitizeSlug( rawSlug ) & "." & prc.fileExt;
 				outFile = siteDir & "/" & relPathArr.toList("/");
 			}
 		} else if (len(prc.permalink)) {
@@ -276,7 +288,8 @@ class {
             var outDirIgnore = variables.cwd & config.outputDir & "/";
             if ( !ignoreDirs.find( outDirIgnore ) ) ignoreDirs.append( outDirIgnore );
 		} catch ( any e ) {
-			printLn( "Error loading SSG config: " & e.message );
+			printLn( "ERROR: Failed to parse ssg-config.json — " & e.message );
+			cliExit( 1 );
 		}
 	}
 
@@ -297,8 +310,6 @@ class {
 			while (!fileIsEOF(openFile)) {
 				arrayAppend(lines, rTrim(fileReadLine(openFile)));
 			}
-		} catch (any e) {
-			rethrow;
 		} finally {
 			fileClose(openFile);
 		}
@@ -389,11 +400,14 @@ class {
 			// Sort posts by date descending
 			collections.post.sort((e1, e2) => dateCompare(e2.date, e1.date));
 
-			// Build tag list and byTag mapping
+			// Build tag list and byTag mapping — use struct index for O(1) duplicate detection
+			var tagIndex = {};
 			collections.post.each((post) => {
 				if (post.keyExists("tags")) {
 					for (var tag in post.tags) {
-						if (!collections.tags.findNoCase(tag)) {
+						var tagKey = lCase( tag );
+						if ( !tagIndex.keyExists( tagKey ) ) {
+							tagIndex[ tagKey ] = true;
 							collections.tags.append(tag);
 						}
 						var slugifiedTag = slugify(tag);
@@ -402,8 +416,29 @@ class {
 					}
 				}
 			});
+			// expose index for use in processPagination
+			variables._tagIndex = tagIndex;
 			collections.tags = collections.tags.sort("text");
 		}
+	}
+
+	/**
+	 * Returns the canonical (first-page) URL for a paginated series.
+	 * For multi-item pagination with {{page}}/{{pageNumber}} placeholders,
+	 * strips them and collapses any resulting double slashes.
+	 */
+	private string function buildCanonicalFirst( required string permalink, required numeric size ){
+		var result = arguments.permalink;
+		if ( arguments.size > 1 ) {
+			var hasPlaceholder = result.findNoCase( "{{page}}" ) || result.findNoCase( "{{pageNumber}}" );
+			if ( hasPlaceholder ) {
+				result = result.replace( "{{page}}", "" );
+				result = result.replace( "{{pageNumber}}", "" );
+				result = reReplace( result, "/{2,}", "/", "all" );
+				if ( right( result, 1 ) != "/" ) result &= "/";
+			}
+		}
+		return result;
 	}
 
 	/**
@@ -418,12 +453,26 @@ class {
 				var data      = prc.pagination.data;
 				var size      = prc.pagination.keyExists( "size" ) ? prc.pagination.size : 1;
 				var targetKey = prc.pagination.keyExists( "alias" ) ? prc.pagination.alias : "pagedData";
-				// data is a string, try to retrieve from variables
+				// data is a string — resolve only against safe known scopes
+				var _originalDataIsStruct = false;
+				var _resolvedStruct       = {};
 				if ( isSimpleValue( data ) ) {
-					data = structGet( prc.pagination.data );
-					// if data is a structure, return the struct key list as an array
+					var _safeScopes = { "collections": variables.collections };
+					var _resolved   = _safeScopes;
+					for ( var _seg in data.listToArray(".") ) {
+						if ( isStruct( _resolved ) && _resolved.keyExists( _seg ) ) {
+							_resolved = _resolved[ _seg ];
+						} else {
+							printLn( "WARNING: pagination.data '" & data & "' could not be resolved." );
+							_resolved = [];
+							break;
+						}
+					}
+					data = _resolved;
+					// if data is a structure, cache it and return the sorted key list as an array
 					if ( isStruct( data ) ) {
-						// if data is a struct, return the struct keys for iteration
+						_originalDataIsStruct = true;
+						_resolvedStruct       = data;
 						data = structKeyList( data ).listSort( "textnocase", "asc" ).listToArray();
 					}
 				}
@@ -467,57 +516,28 @@ class {
 					// Ensure the first page uses the parent's permalink only for multi-item pages
 					if ( paged.len() >= 1 && size > 1 && !parent_prc.permalink.findNoCase("{{") ) pagePermalinks[ 1 ] = parent_prc.permalink;
 
+				// Compute canonical first-page URL once, outside the loop
+				var canonicalFirst = buildCanonicalFirst( parent_prc.permalink, size );
+
 				paged.each( ( page, index ) => {
 					var page_prc          = duplicate( parent_prc );
 					page_prc[ targetKey ] = page;
 					// Build this page's permalink
 					var builtPermalink    = pagePermalinks[ index ];
-					// If this is the first page, use canonical first URL
 					if ( index == 1 ) {
-						var canonicalFirst = builtPermalink;
-						if ( size > 1 ) {
-							var hasPlaceholder = parent_prc.permalink.findNoCase("{{page}}") || parent_prc.permalink.findNoCase("{{pageNumber}}");
-							if ( hasPlaceholder ) {
-								canonicalFirst = parent_prc.permalink;
-								canonicalFirst = canonicalFirst.replace("{{page}}", "");
-								canonicalFirst = canonicalFirst.replace("{{pageNumber}}", "");
-								// clean up any double slashes and ensure trailing slash
-								while ( canonicalFirst.find("//") ) canonicalFirst = canonicalFirst.replace("//", "/");
-								if ( right(canonicalFirst,1) != "/" ) canonicalFirst &= "/";
-							} else if ( !parent_prc.permalink.findNoCase("{{") ) {
-								canonicalFirst = parent_prc.permalink;
-							}
-						}
 						page_prc.permalink = canonicalFirst;
-						getOutfile( page_prc );
 					} else {
-						// For subsequent pages, use the built pagination permalink
 						page_prc.permalink = builtPermalink;
-						getOutfile( page_prc );
 					}
+					getOutfile( page_prc );
 					// If the original data reference was a struct and the page is a single key, merge that data
-					if (
-						isSimpleValue( prc.pagination.data ) &&
-						isStruct( structGet( prc.pagination.data ) ) &&
-						isSimpleValue( page )
-					) {
-						page_prc.append( structGet( prc.pagination.data )[ page ] );
+					if ( _originalDataIsStruct && isSimpleValue( page ) ) {
+						page_prc.append( _resolvedStruct[ page ] );
 					}
-						getPermalink( page_prc );
+					getPermalink( page_prc );
 					// Inject pagination navigation info
 					var totalPages  = paged.len();
 					var totalItems  = isArray( data ) ? data.len() : 0;
-					// Canonical first href: if multi-item and parent has placeholders, strip them to get base; else use parent's permalink
-					var hasPlaceholder = parent_prc.permalink.findNoCase("{{page}}") || parent_prc.permalink.findNoCase("{{pageNumber}}");
-					var canonicalFirst = parent_prc.permalink;
-					if ( size > 1 ) {
-						if ( hasPlaceholder ) {
-							canonicalFirst = canonicalFirst.replace("{{page}}", "");
-							canonicalFirst = canonicalFirst.replace("{{pageNumber}}", "");
-							while ( canonicalFirst.find("//") ) canonicalFirst = canonicalFirst.replace("//", "/");
-							if ( right(canonicalFirst,1) != "/" ) canonicalFirst &= "/";
-						}
-					}
 					var prevHref = "";
 					if ( index > 1 ) {
 						prevHref = pagePermalinks[ index - 1 ];
@@ -548,8 +568,13 @@ class {
 						additions.append( page_prc );
 					// tag and template type processing
 					if ( page_prc.keyExists( "tags" ) && page_prc.tags.len() ) {
+						if ( !isStruct( variables._tagIndex ?: "" ) ) variables._tagIndex = {};
 						for ( var tag in page_prc.tags ) {
-							if ( !collections.tags.findNoCase( tag ) ) collections.tags.append( tag );
+							var tagKey = lCase( tag );
+							if ( !variables._tagIndex.keyExists( tagKey ) ) {
+								variables._tagIndex[ tagKey ] = true;
+								collections.tags.append( tag );
+							}
 							var slugifiedTag = slugify( tag );
 							if ( !collections.byTag.keyExists( slugifiedTag ) ) collections.byTag[ slugifiedTag ] = [];
 							collections.byTag[ slugifiedTag ].append( page_prc );
@@ -566,6 +591,8 @@ class {
 		}
 		// Append after to avoid mutating during iteration
 		additions.each( (p) => templates.append( p ) );
+		// Re-sort tags so any added during pagination are correctly ordered
+		if ( collections.tags.len() ) collections.tags = collections.tags.sort("text");
 	}
 
 	/**
@@ -726,8 +753,8 @@ class {
 			}
 
 		} catch ( any e ) {
-			dump(prc);
-			printLn( "Error rendering template: " & e.message );
+			printLn( "ERROR rendering template '" & (prc.inFile ?: "") & "': " & e.message );
+			if ( len( e.detail ?: "" ) ) printLn( e.detail );
 		}
 
 		// if ( isXML( trim( toString(renderedHtml) ) ) ) prc.fileExt = "xml";
